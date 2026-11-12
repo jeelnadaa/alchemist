@@ -141,6 +141,20 @@ describe("timeline model", () => {
     expect(h2.undoStack.length).toBe(0);
   });
 
+  it("parses typed times", () => {
+    expect(M.parseTime("83")).toBe(83);
+    expect(M.parseTime("1:23")).toBe(83);
+    expect(M.parseTime("1:02:03")).toBe(3723);
+    expect(M.parseTime("00:01:23:15", 30)).toBe(83.5);
+    expect(M.parseTime("1m20s")).toBe(80);
+    expect(M.parseTime("2h")).toBe(7200);
+    expect(M.parseTime("1.5m")).toBe(90);
+    expect(M.parseTime("12,5")).toBe(12.5);
+    expect(M.parseTime("abc")).toBeNull();
+    expect(M.parseTime("")).toBeNull();
+    expect(M.parseTime("1:2:3:4:5")).toBeNull();
+  });
+
   it("source time honours speed, reverse and freeze", () => {
     expect(M.sourceTime(M.newClip({ start: 10, in: 5, out: 25, speed: 2 }), 12)).toBe(9);
     expect(M.sourceTime(M.newClip({ start: 0, in: 0, out: 10, reverse: true }), 2)).toBe(8);

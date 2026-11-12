@@ -233,7 +233,7 @@ body.bar-window, body.picker-window { background: transparent; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips button { padding: 6px 11px; border-radius: 8px; font-size: 0.87rem; background: var(--raised); color: var(--text); border: 0; }
 .chips button[aria-pressed="true"] { background: var(--sel); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); }
-.timeline { height: 270px; flex: none; display: flex; flex-direction: column; background: var(--surf); border-top: 1px solid var(--line); }
+.timeline { height: 270px; flex: none; transition: height .18s ease; display: flex; flex-direction: column; background: var(--surf); border-top: 1px solid var(--line); }
 .tl-tools { height: 46px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); }
 .tool { height: 32px; padding: 0 10px; border-radius: 8px; display: flex; align-items: center; gap: 7px; font-size: 0.87rem; background: none; border: 0; color: var(--text); }
 .tool:hover { background: var(--raised); }
@@ -300,3 +300,28 @@ body.bar-window, body.picker-window { background: transparent; }
 .report dl div { padding: 12px; border-radius: 12px; background: var(--surf); }
 .report dt { font-size: 0.8rem; color: var(--muted); }
 .report dd { margin: 2px 0 0; font-weight: 700; }
+
+/* ---------- Timeline: smooth interaction, resize, typed time ---------- */
+.tl-splitter { height: 7px; flex: none; cursor: row-resize; background: var(--surf); border-top: 1px solid var(--line); position: relative; }
+.tl-splitter::after { content: ""; position: absolute; left: 50%; top: 2px; width: 44px; height: 3px; margin-left: -22px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 45%, transparent); transition: background-color .15s, width .15s, margin-left .15s; }
+.tl-splitter:hover::after, .tl-splitter:focus-visible::after { background: var(--accent); width: 64px; margin-left: -32px; }
+.timeline.resizing { transition: none; }
+.timeline.collapsed { height: 46px !important; }
+.timeline.collapsed .tl-scroll { display: none; }
+.timeline .tl-collapse svg { transition: transform .2s; }
+.timeline.collapsed .tl-collapse svg { transform: rotate(180deg); }
+.tl-scroll { overscroll-behavior: contain; }
+.tl-clip { transition: box-shadow .12s, filter .12s; }
+.tl-clip:hover { filter: brightness(1.15); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent); }
+.tl-clip.sel:hover { box-shadow: 0 0 0 2px var(--accent); }
+.tl-clip.dragging { cursor: grabbing; z-index: 2; will-change: left, width; box-shadow: 0 0 0 2px var(--accent), 0 8px 20px rgba(0,0,0,.35); transition: none; }
+.tl-clip .edge { transition: background-color .12s; }
+.tl-clip .edge:hover { background: color-mix(in srgb, var(--text) 35%, transparent); }
+.playhead { will-change: transform; }
+.tl-hover { position: absolute; top: 0; bottom: 0; width: 1px; background: color-mix(in srgb, var(--text) 45%, transparent); pointer-events: none; z-index: 2; will-change: transform; }
+.tl-hover::before { content: attr(data-time); position: absolute; top: 2px; left: 6px; padding: 1px 6px; border-radius: 5px; background: var(--raised); color: var(--text); font-family: var(--mono); font-size: 0.7rem; white-space: nowrap; box-shadow: 0 0 0 1px var(--line); }
+.tl-snap { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); pointer-events: none; z-index: 3; }
+.tl-ruler { cursor: ew-resize; }
+.timecode { width: 112px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text); text-align: right; }
+.timecode:hover { border-color: var(--line); background: var(--raised); }
+.timecode:focus { outline: none; border-color: var(--accent); background: var(--raised); text-align: left; }

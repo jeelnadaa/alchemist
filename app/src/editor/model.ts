@@ -340,3 +340,21 @@ export function sourceTime(c: Clip, t: number): number {
   const local = (t - c.start) * c.speed;
   return c.reverse ? c.out - local : c.in + local;
 }
+
+/**
+ * Parse a typed time: "83", "83.5", "1:23", "1:02:03", "00:01:23:10" (frames),
+ * "1m20s", "2h", "45s", "1.5m". Returns seconds or null.
+ */
+export function parseTime(input: string, fps = 30): number | null {
+  const s = input.trim().toLowerCase().replace(/,/g, ".");
+  if (!s) return null;
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+  const units = /^(?:(\d+(?:\.\d+)?)h)?\s*(?:(\d+(?:\.\d+)?)m)?\s*(?:(\d+(?:\.\d+)?)s)?$/.exec(s);
+  if (units && (units[1] || units[2] || units[3])) return +(units[1] || 0) * 3600 + +(units[2] || 0) * 60 + +(units[3] || 0);
+  const parts = s.split(/[:;]/);
+  if (parts.length < 2 || parts.length > 4 || parts.some((x) => !/^\d+(\.\d+)?$/.test(x))) return null;
+  const n = parts.map(Number);
+  if (n.length === 2) return n[0] * 60 + n[1];
+  if (n.length === 3) return n[0] * 3600 + n[1] * 60 + n[2];
+  return n[0] * 3600 + n[1] * 60 + n[2] + n[3] / Math.max(1, fps);
+}

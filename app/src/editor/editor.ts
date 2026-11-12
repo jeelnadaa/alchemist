@@ -76,7 +76,12 @@ class Editor {
   tl!: HTMLElement;
   tlGrid!: HTMLElement;
   playhead!: HTMLElement;
-  timeEl!: HTMLElement;
+  timeEl!: HTMLInputElement;
+  durEl!: HTMLElement;
+  zoomInput!: HTMLInputElement;
+  timelineEl!: HTMLElement;
+  hoverLine!: HTMLElement;
+  private seekRaf = 0;
   playBtn!: HTMLButtonElement;
   banner!: HTMLElement;
   savedEl!: HTMLElement;
@@ -171,7 +176,24 @@ class Editor {
     this.canvas = h("div", { class: "canvas" });
     this.overlayLayer = h("div", { class: "canvas", style: { pointerEvents: "none" } });
     this.stage = h("div", { class: "stage", role: "img", "aria-label": "Video preview" }, this.canvas, this.overlayLayer);
-    this.timeEl = h("span", { class: "mono small" });
+    this.timeEl = h("input", { class: "timecode mono small", type: "text", spellcheck: false, "aria-label": "Current time. Type a time and press Enter to jump there", title: "Type a time like 1:23, 83, 1m20s or 00:01:23:10, then press Enter" }) as HTMLInputElement;
+    this.timeEl.addEventListener("focus", () => this.timeEl.select());
+    this.timeEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const t = M.parseTime(this.timeEl.value, this.p.settings.fps);
+        if (t == null) {
+          toast("Type a time like 1:23, 83, 1m20s or 00:01:23:10.");
+          return;
+        }
+        this.seek(t);
+        this.timeEl.blur();
+      } else if (e.key === "Escape") {
+        this.timeEl.blur();
+      }
+      e.stopPropagation();
+    });
+    this.timeEl.addEventListener("blur", () => this.updateTime());
+    this.durEl = h("span", { class: "mono small muted" });
     this.playBtn = h("button", { type: "button", class: "play", "aria-label": "Play", onclick: () => this.toggle() }, icon("play", 16)) as HTMLButtonElement;
     const preview = h("section", { class: "ed-preview", "aria-label": "Preview" },
       this.banner,
@@ -180,7 +202,7 @@ class Editor {
         h("button", { type: "button", class: "icon-btn", "aria-label": "Back 5 seconds", onclick: () => this.seek(this.t - 5) }, icon("back", 18)),
         this.playBtn,
         h("button", { type: "button", class: "icon-btn", "aria-label": "Forward 5 seconds", onclick: () => this.seek(this.t + 5) }, icon("forward", 18)),
-        this.timeEl));
+        h("span", { class: "row", style: { gap: "4px" } }, this.timeEl, this.durEl)));
     this.inspector = h("aside", { class: "inspector", "aria-label": "Settings for the selection" });
     this.tl = h("div", { class: "tl-scroll" });
     const tools = h("div", { class: "tl-tools", role: "toolbar", "aria-label": "Timeline tools" },
@@ -195,14 +217,33 @@ class Editor {
       h("span", { class: "grow" }),
       h("span", { class: "tiny muted" }, "Zoom"),
       (() => {
-        const r = h("input", { type: "range", min: "5", max: "300", value: String(this.pxPerSec), "aria-label": "Timeline zoom", style: { width: "120px", marginLeft: "8px" } }) as HTMLInputElement;
+        const r = h("input", { type: "range", min: "5", max: "300", value: String(this.pxPerSec), "aria-label": "Timeline zoom (Ctrl + scroll also zooms)", style: { width: "120px", marginLeft: "8px" } }) as HTMLInputElement;
         r.style.setProperty("--fill", `${((this.pxPerSec - 5) / 295) * 100}%`);
-        r.addEventListener("input", () => { this.pxPerSec = +r.value; r.style.setProperty("--fill", `${((+r.value - 5) / 295) * 100}%`); this.renderTimeline(); });
+        r.addEventListener("input", () => this.setZoom(+r.value));
+        this.zoomInput = r;
         return r;
-      })());
+      })(),
+      h("button", { type: "button", class: "icon-btn", title: "Fit the whole video", "aria-label": "Fit the whole video in the timeline", onclick: () => this.zoomToFit() }, icon("box", 15)),
+      h("button", { type: "button", class: "icon-btn tl-collapse", title: "Shrink or expand the timeline", "aria-label": "Shrink or expand the timeline", onclick: () => this.toggleTimeline() }, icon("chevron", 16)));
+    const splitter = h("div", { class: "tl-splitter", role: "separator", "aria-orientation": "horizontal", "aria-label": "Drag to resize the timeline", tabindex: "0", title: "Drag to resize. Double-click to shrink or expand." });
+    splitter.addEventListener("mousedown", (e) => this.dragSplitter(e));
+    splitter.addEventListener("dblclick", () => this.toggleTimeline());
+    splitter.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        this.setTimelineHeight(this.timelineHeight() + (e.key === "ArrowUp" ? 30 : -30));
+      }
+    });
+    this.timelineEl = h("section", { class: "timeline", "aria-label": "Timeline" }, tools, this.tl);
     this.root = h("div", { class: "editor" },
       h("div", { class: "ed-top" }, preview, this.inspector),
-      h("section", { class: "timeline", "aria-label": "Timeline" }, tools, this.tl));
+      splitter,
+      this.timelineEl);
+    this.setTimelineHeight(Number(localStorage.getItem("alc-tl-height")) || 270, false);
+    if (localStorage.getItem("alc-tl-collapsed") === "1") this.timelineEl.classList.add("collapsed");
+    this.tl.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
+    this.tl.addEventListener("mousemove", (e) => this.onHover(e));
+    this.tl.addEventListener("mouseleave", () => this.hoverLine?.classList.add("hidden"));
     this.shell.main.appendChild(this.root);
     new ResizeObserver(() => this.layoutStage()).observe(this.stage.parentElement!);
   }
@@ -394,8 +435,13 @@ class Editor {
         this.overlayLayer.appendChild(h("div", { class: "txt", style: { fontSize: `${44 * (this.stage.clientHeight / 1080)}px`, bottom: "8%" } }, cap.text));
       }
     }
-    this.timeEl.replaceChildren(timecode(this.t, Math.round(p.settings.fps)), h("span", { class: "muted" }, ` / ${clock(M.duration(p))}`));
-    this.playhead && (this.playhead.style.left = `${this.t * this.pxPerSec}px`);
+    this.updateTime();
+    if (this.playhead) this.playhead.style.transform = `translateX(${this.t * this.pxPerSec}px)`;
+  }
+
+  updateTime() {
+    if (document.activeElement !== this.timeEl) this.timeEl.value = timecode(this.t, Math.round(this.p.settings.fps));
+    this.durEl.textContent = `/ ${clock(M.duration(this.p))}`;
   }
 
   fadeAt(c: Clip): number {
@@ -496,6 +542,102 @@ class Editor {
 
   // ------------------------------------------------------------ timeline
 
+  timelineHeight(): number {
+    return this.timelineEl.getBoundingClientRect().height || 270;
+  }
+
+  setTimelineHeight(px: number, save = true) {
+    const max = Math.max(160, window.innerHeight * 0.7);
+    const hgt = Math.round(Math.min(max, Math.max(130, px)));
+    this.timelineEl.style.height = `${hgt}px`;
+    this.timelineEl.classList.remove("collapsed");
+    if (save) {
+      localStorage.setItem("alc-tl-height", String(hgt));
+      localStorage.setItem("alc-tl-collapsed", "0");
+    }
+    this.layoutStage();
+  }
+
+  toggleTimeline() {
+    const collapsed = this.timelineEl.classList.toggle("collapsed");
+    localStorage.setItem("alc-tl-collapsed", collapsed ? "1" : "0");
+    setTimeout(() => this.layoutStage(), 200);
+  }
+
+  dragSplitter(e: MouseEvent) {
+    e.preventDefault();
+    const y0 = e.clientY;
+    const h0 = this.timelineEl.classList.contains("collapsed") ? 46 : this.timelineHeight();
+    document.body.style.cursor = "row-resize";
+    this.timelineEl.classList.add("resizing");
+    let raf = 0;
+    const mv = (ev: MouseEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => this.setTimelineHeight(h0 + (y0 - ev.clientY)));
+    };
+    const up = () => {
+      document.body.style.cursor = "";
+      this.timelineEl.classList.remove("resizing");
+      document.removeEventListener("mousemove", mv);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", mv);
+    document.addEventListener("mouseup", up);
+  }
+
+  /** Zoom keeping the time under `anchorX` (client px) in place. */
+  setZoom(px: number, anchorX?: number) {
+    const next = Math.min(300, Math.max(5, px));
+    const rect = this.tl.getBoundingClientRect();
+    const ax = anchorX ?? rect.left + rect.width / 2;
+    const tAtAnchor = (this.tl.scrollLeft + ax - rect.left - 122) / this.pxPerSec;
+    this.pxPerSec = next;
+    if (this.zoomInput) {
+      this.zoomInput.value = String(Math.round(next));
+      this.zoomInput.style.setProperty("--fill", `${((next - 5) / 295) * 100}%`);
+    }
+    this.renderTimeline();
+    this.tl.scrollLeft = Math.max(0, tAtAnchor * next + 122 - (ax - rect.left));
+  }
+
+  zoomToFit() {
+    const avail = this.tl.clientWidth - 150;
+    this.setZoom(avail / Math.max(M.duration(this.p), 1));
+    this.tl.scrollLeft = 0;
+  }
+
+  onWheel(e: WheelEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      this.setZoom(this.pxPerSec * Math.exp(-e.deltaY * 0.0015), e.clientX);
+    } else if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX) && this.tl.scrollHeight <= this.tl.clientHeight + 2) {
+      // Plain scroll pans sideways when there's nothing to scroll vertically.
+      e.preventDefault();
+      this.tl.scrollLeft += e.deltaY;
+    }
+  }
+
+  onHover(e: MouseEvent) {
+    if (!this.hoverLine || !this.tlGrid) return;
+    const r = this.tlGrid.getBoundingClientRect();
+    const x = e.clientX - r.left - 122;
+    if (x < 0) {
+      this.hoverLine.classList.add("hidden");
+      return;
+    }
+    this.hoverLine.classList.remove("hidden");
+    this.hoverLine.style.transform = `translateX(${x}px)`;
+    this.hoverLine.dataset.time = clock(x / this.pxPerSec);
+  }
+
+  /** Seek without rebuilding anything but the preview, at most once per frame. */
+  scrubTo(t: number) {
+    this.t = Math.max(0, Math.min(M.duration(this.p), t));
+    if (this.playhead) this.playhead.style.transform = `translateX(${this.t * this.pxPerSec}px)`;
+    cancelAnimationFrame(this.seekRaf);
+    this.seekRaf = requestAnimationFrame(() => this.renderStage());
+  }
+
   renderTimeline() {
     const p = this.p;
     const total = Math.max(M.duration(p) + 10, 30);
@@ -510,7 +652,7 @@ class Editor {
     for (const mk of p.markers) ruler.appendChild(h("span", { class: "marker", title: mk.label || "Marker", style: { left: `${mk.t * this.pxPerSec}px` } }));
     const seekFrom = (e: MouseEvent) => {
       const r = ruler.getBoundingClientRect();
-      this.seek((e.clientX - r.left) / this.pxPerSec);
+      this.scrubTo((e.clientX - r.left) / this.pxPerSec);
     };
     ruler.addEventListener("mousedown", (e) => {
       seekFrom(e);
@@ -548,8 +690,9 @@ class Editor {
       const b = p.outPoint ?? M.duration(p);
       grid.appendChild(h("div", { class: "inout", style: { left: `${122 + a * this.pxPerSec}px`, width: `${(b - a) * this.pxPerSec}px` } }));
     }
-    this.playhead = h("div", { class: "playhead", style: { left: `${this.t * this.pxPerSec}px`, marginLeft: "122px" } });
-    grid.appendChild(this.playhead);
+    this.playhead = h("div", { class: "playhead", style: { left: "122px", transform: `translateX(${this.t * this.pxPerSec}px)` } });
+    this.hoverLine = h("div", { class: "tl-hover hidden", style: { left: "122px" }, "aria-hidden": "true" });
+    grid.append(this.hoverLine, this.playhead);
     this.tl.appendChild(grid);
     this.tl.scrollLeft = keepScroll;
     this.tlGrid = grid;
@@ -561,7 +704,7 @@ class Editor {
     const label = c.text ? c.text.text : c.shape ? { rect: "Box", highlight: "Highlight", blur: "Blur", pixelate: "Pixelate" }[c.shape.shape] || "Shape" : m ? fileName(m.path) : "Clip";
     const kind = c.text || c.shape ? "text" : track.kind;
     const selected = this.sel?.kind === "clip" && this.sel.id === c.id;
-    const el = h("div", { class: `tl-clip ${kind}${selected ? " sel" : ""}`, role: "button", tabindex: "0", "aria-label": `${label}, ${clock(c.start)} to ${clock(c.start + len)}`, style: { left: `${c.start * this.pxPerSec}px`, width: `${Math.max(6, len * this.pxPerSec)}px` } });
+    const el = h("div", { class: `tl-clip ${kind}${selected ? " sel" : ""}`, dataset: { clip: c.id }, role: "button", tabindex: "0", "aria-label": `${label}, ${clock(c.start)} to ${clock(c.start + len)}`, style: { left: `${c.start * this.pxPerSec}px`, width: `${Math.max(6, len * this.pxPerSec)}px` } });
     const wave = m && this.waves.get(m.id);
     if (wave && (track.kind === "audio" || track.kind === "video")) {
       const box = h("span", { class: "wave" });
@@ -583,33 +726,58 @@ class Editor {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
-      this.select({ kind: "clip", id: c.id });
+      this.selectQuiet({ kind: "clip", id: c.id });
       const x0 = e.clientX;
       const before = this.p;
       let next = before;
       let moved = false;
+      let raf = 0;
       const snapPx = 8 / this.pxPerSec;
+      el.classList.add("dragging");
+      const guide = h("div", { class: "tl-snap hidden", style: { left: "122px" } });
+      this.tlGrid.appendChild(guide);
       const mv = (ev: MouseEvent) => {
-        const dt = (ev.clientX - x0) / this.pxPerSec;
         if (Math.abs(ev.clientX - x0) > 2) moved = true;
-        if (mode === "move") {
-          const laneEl = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>(".tl-lane");
-          next = M.move(before, c.id, c.start + dt, laneEl?.dataset.track, snapPx, this.t);
-        } else if (mode === "l") {
-          next = M.trim(before, c.id, "start", M.snap(before, c.start + dt, snapPx, c.id, [this.t]));
-        } else {
-          next = M.trim(before, c.id, "end", M.snap(before, M.clipEnd(c) + dt, snapPx, c.id, [this.t]));
-        }
-        this.p = next;
-        this.renderTimeline();
-        this.renderStage();
+        if (!moved) return;
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {
+          const dt = (ev.clientX - x0) / this.pxPerSec;
+          let laneEl: HTMLElement | null = null;
+          if (mode === "move") {
+            laneEl = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>(".tl-lane") ?? null;
+            next = M.move(before, c.id, c.start + dt, laneEl?.dataset.track, snapPx, this.t);
+          } else if (mode === "l") {
+            next = M.trim(before, c.id, "start", M.snap(before, c.start + dt, snapPx, c.id, [this.t]));
+          } else {
+            next = M.trim(before, c.id, "end", M.snap(before, M.clipEnd(c) + dt, snapPx, c.id, [this.t]));
+          }
+          const f = M.find(next, c.id);
+          if (!f) return;
+          el.style.left = `${f.clip.start * this.pxPerSec}px`;
+          el.style.width = `${Math.max(6, M.clipLength(f.clip) * this.pxPerSec)}px`;
+          if (laneEl && f.track.id === laneEl.dataset.track && el.parentElement !== laneEl) laneEl.appendChild(el);
+          // Guide line when an edge snapped to something.
+          const raw = mode === "r" ? M.clipEnd(c) + dt : c.start + dt;
+          const edge = mode === "r" ? M.clipEnd(f.clip) : f.clip.start;
+          const snapped = Math.abs(edge - raw) > 1e-6 && Math.abs(edge - raw) <= snapPx + 1e-9;
+          guide.classList.toggle("hidden", !snapped);
+          guide.style.transform = `translateX(${edge * this.pxPerSec}px)`;
+          this.p = next;
+          this.renderStage();
+        });
       };
       const up = () => {
+        cancelAnimationFrame(raf);
         document.removeEventListener("mousemove", mv);
         document.removeEventListener("mouseup", up);
+        el.classList.remove("dragging");
+        guide.remove();
         this.p = before;
-        if (moved) this.commit(next);
-        else this.renderAll();
+        if (moved && next !== before) this.commit(next);
+        else {
+          this.renderInspector();
+          this.renderStage();
+        }
       };
       document.addEventListener("mousemove", mv);
       document.addEventListener("mouseup", up);
@@ -618,6 +786,15 @@ class Editor {
     left.addEventListener("mousedown", (e) => startDrag(e, "l"));
     right.addEventListener("mousedown", (e) => startDrag(e, "r"));
     return el;
+  }
+
+  /** Change the selection without rebuilding the timeline (keeps drags smooth). */
+  selectQuiet(s: Sel) {
+    this.sel = s;
+    this.openSection = "";
+    this.tl.querySelectorAll(".tl-clip.sel, .tl-zoom.sel").forEach((x) => x.classList.remove("sel"));
+    if (s?.kind === "clip") this.tl.querySelector(`[data-clip="${s.id}"]`)?.classList.add("sel");
+    this.renderInspector();
   }
 
   select(s: Sel) {
