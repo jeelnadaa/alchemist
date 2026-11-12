@@ -6,12 +6,14 @@
 
 ## What it does
 
-- **Record** a screen, a window or an area, with microphone and computer sound on separate tracks and an optional camera bubble. Start and stop from anywhere with `Ctrl Shift R`. Saved continuously, so a crash loses about a second; interrupted recordings are recovered on the next launch.
+- **Record** a screen, a window or an area, with microphone and computer sound on separate tracks and an optional camera bubble. Supports standard presets (30, 60 fps) and high refresh-rate / custom frame rates up to 240 fps (120, 144, 165, 240 fps) for silky smooth gameplay. Start and stop from anywhere with `Ctrl Shift R`. Saved continuously, so a crash loses about a second; interrupted recordings are recovered on the next launch.
+- **Instant Replay**: Keep the last 15s to 2 min rolling in a background buffer and save clutch gaming moments instantly to your Replays folder with `Ctrl Shift S`, at full resolution and framerate without re-encoding.
 - **Edit** on a multi-track timeline: split, trim, move with snapping, ripple delete, duplicate, speed, reverse, freeze frame, crop/rotate/flip, fades, text, highlights, boxes, blur and pixelate regions, picture-in-picture, captions (type or import SRT/VTT), markers and in/out ranges. Auto-zoom follows your clicks from the recording; silent pauses are found and removed in one click. Undo survives restarts, projects autosave.
-- **Convert & compress** without opening the editor: shrink to a target size ("under 25 MB"), change format (MP4, WebM, MOV, MKV, GIF, MP3, M4A, WAV) with lossless re-wrapping when possible, custom size and frame rate, a 5-second before/after preview, and an honest report with the real size saved and a measured quality score (VMAF or SSIM).
+- **Convert & compress** without opening the editor: shrink to a target size ("under 25 MB"), change format (MP4, WebM, MOV, MKV, GIF, MP3, M4A, WAV) with lossless re-wrapping when possible, custom size and frame rate (presets up to 240 fps plus custom inputs), a 5-second before/after preview, and an honest report with the real size saved and a measured quality score (VMAF or SSIM).
 - **Enhance**: sharpen, remove noise, stabilise, upscale 2×, fix interlacing, HDR to normal.
 - **Export** with five plain presets: best for sharing, vertical for phones, small file, GIF, audio only. Exports run in the background.
 - **Find anything** with `Ctrl K`: actions, projects, recent files, settings and help in one search.
+- **Production-grade UI**: Modern glassmorphic interface with rim lighting, instant native tooltips, streamlined 72px rail navigation, and Raycast-style command palette.
 - **Ten themes** (five dark, five light, including high contrast), follow-system, accent colours, text size, and your own theme files. Every theme is tested for WCAG AA contrast.
 - **Updates itself** from GitHub Releases, verified against a signature, never during a recording or export. Or choose "just tell me" or "never".
 - **Installer or portable** on every OS. Portable mode keeps everything in a `data` folder next to the app.

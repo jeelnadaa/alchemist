@@ -22,9 +22,9 @@ The honest summary: size, start-up and idle are on target and enforced; recordin
 
 | Suite | Count | What it covers |
 |---|---|---|
-| Rust unit (`make test-unit`) | 71 | resolution/fps limits, portable mode, FFmpeg probe/progress/error parsing, target-size maths, every convert/enhance/export argument builder, recorder capture arguments for all three OSes, WAV crash repair, project save/load/migrate/package/relink/history, silence/zoom/caption/waveform helpers, settings |
+| Rust unit (`make test-unit`) | 87 | resolution/fps limits (including high refresh rates up to 240 fps), portable mode, FFmpeg probe/progress/error parsing, target-size maths, every convert/enhance/export argument builder, recorder capture arguments for all three OSes, instant replay rolling buffer + custom framerates + keyframe GOP, WAV crash repair, project save/load/migrate/package/relink/history, silence/zoom/caption/waveform helpers, settings |
 | Media end-to-end (`make test-media`) | 4 (+1 manual) | generates real clips and runs real FFmpeg: compress to size (lands under limit, VMAF measured), lossless remux, WebM/GIF/MP3, custom size+fps clamping, all enhance filters, silence detection, waveform, thumbnails, quality scoring, all five export presets plus range/custom export with zoom, padding, rounded corners, blur, highlight, text, captions, PiP, speed, freeze, fades, loudness; recording finalize + crash recovery; hardware encoder sanity. Manual (`--ignored`): a real 3 s screen recording with pause/resume and computer sound |
-| UI logic (`make test-ui`) | 26 | timeline edits (split, trim, move+snap, ripple, duplicate, freeze, speed, silence removal), zoom maths identical to export, undo history, WCAG AA contrast for all 10 themes × 5 accents, custom theme validation, search ranking and synonyms, shortcut presets have no conflicts, number formatting |
+| UI logic (`make test-ui`) | 31 | timeline edits (split, trim, move+snap, ripple, duplicate, freeze, speed, silence removal), zoom maths identical to export, undo history, WCAG AA contrast for all 10 themes × 5 accents, custom theme validation, search ranking and synonyms, shortcut presets have no conflicts, timecodes and parsing at 30/60/120/144/240 fps, number formatting |
 | Release scripts (`make test-scripts`) | 2 | asset naming contract, signed update manifest |
 | Browser walkthrough | manual | first run, home, Ctrl K search, convert queue + report, editor (split, text, silence removal, undo), export dialog, settings themes + custom theme import, recorder + bar → editor |
 
@@ -40,7 +40,8 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 - 🟡 Computer sound on macOS needs ScreenCaptureKit (not done)
 - ✅ Global hotkey Ctrl/Cmd+Shift+R, countdown, floating recording bar, tray icon, pause/resume joined into one clip
 - ✅ Cursor, click, scroll and (opt-in) keystroke sidecar
-- ✅ Presets (tutorial, high, tiny) and custom resolution/fps with the shared hard limits
+- ✅ Presets (tutorial, high, tiny) and custom resolution/fps (up to 240 fps, with 30, 60, 120, 144, 240 fps quick chips and custom inputs) with the shared hard limits
+- ✅ Instant replay: rolling buffer (15s to 2 min), hotkey Ctrl/Cmd+Shift+S, dedicated Replays folder, and persistent status chip in title bar and toolbar
 - ✅ Crash-safe writing (Matroska clusters every second, WAV headers flushed every second) and automatic recovery on next launch
 - ✅ Disk-space warnings, refusal under 500 MB free, auto-stop under 200 MB, dropped-frame count, post-recording report
 - ✅ Auto-stop by time or size
@@ -67,7 +68,7 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 - ✅ Batch queue with progress, ETA, cancel; keeps running with the window closed
 - ✅ MP4, WebM, MOV, MKV, GIF, MP3, M4A, WAV; lossless remux when codecs allow
 - ✅ Hardware encoding (verified by a real test encode) with software fallback
-- ✅ Custom resolution/fps with fit/fill/stretch, proportion lock and preset frame rates
+- ✅ Custom resolution/fps with fit/fill/stretch, proportion lock, presets up to 240 fps (120, 144, 240 fps) and custom framerate input
 - ✅ Keeps metadata, chapters, subtitles and all audio tracks where the container allows
 - ✅ Target-size mode (two-pass software, or hardware pass + automatic retry if over)
 - ✅ Presets by use (chat, email, websites)
@@ -95,6 +96,7 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 - ✅ Versioned project format with migration; originals never touched
 - ✅ Local-only crash reports
 - ✅ Website (landing + download pages) on Cloudflare Pages
+- ✅ Production-grade UI redesign: specular rim lighting, glassmorphism, zero-runtime-cost native CSS tooltips, streamlined 72px rail navigation, and Raycast-style search bar
 
 ### Phase 1 exit criteria
 - ✅ Record, trim, annotate, export and compress entirely inside Alchemist
@@ -118,7 +120,7 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 ## Phase 3 — Depth and mastery
 - 🟡 Enhance: denoise, sharpen, stabilise, 2× upscale (high-quality scaling, not AI), deinterlace, HDR→SDR, before/after preview. ⬜ AI upscaling, frame interpolation, batch enhance presets
 - ⬜ Keyframes, colour tools/LUTs, chroma key, slip/slide/roll, nested sequences, multicam
-- 🟡 Instant replay (rolling buffer, hotkey, Replays folder) done; ⬜ watch folders, pipelines, scheduled recording, command-line interface
+- ✅ Instant replay (rolling buffer, hotkey `Ctrl Shift S`, Replays folder, high-framerate buffer support up to 240 fps) done; ⬜ watch folders, pipelines, scheduled recording, command-line interface
 - ⬜ Opt-in connected features, interchange formats
 - 🟡 Polish: first-run guide and empty states done; ⬜ localisation, public benchmark page
 
