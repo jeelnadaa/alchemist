@@ -113,7 +113,15 @@ jobs:
             *apple*) BUNDLES=app,dmg ;;
             *) BUNDLES=appimage,deb,rpm ;;
           esac
-          cd app && npx tauri build --target ${{ matrix.target }} --bundles $BUNDLES
+          # hdiutil on hosted macOS runners sometimes fails with "resource busy": retry.
+          cd app
+          for attempt in 1 2 3; do
+            if npx tauri build --target ${{ matrix.target }} --bundles $BUNDLES; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "Build attempt $attempt failed; retrying."
+            hdiutil info 2>/dev/null | awk '/\/dev\/disk/ {print $1}' | xargs -n1 hdiutil detach -force 2>/dev/null || true
+            sleep 15
+          done
           cd .. && node scripts/collect-release.mjs ${{ matrix.target }}
       - name: Smoke test the packaged app
         if: runner.os == 'Linux' && !matrix.cross
@@ -121,7 +129,14 @@ jobs:
         run: |
           mkdir -p smoke && tar -xzf release-assets/*.tar.gz -C smoke
           sudo apt-get install -y xvfb
-          (xvfb-run -a timeout 20 ./smoke/alchemist/alchemist; echo "exit $?") | tee smoke.log
+          # Still running after 20 s (timeout's exit code 124) is a pass.
+          set +e
+          xvfb-run -a timeout 20 ./smoke/alchemist/alchemist > smoke.log 2>&1
+          code=$?
+          set -e
+          cat smoke.log
+          echo "exit $code"
+          if [ "$code" != 124 ]; then echo "The app exited during the smoke test."; exit 1; fi
           ! grep -q "panicked" smoke.log
           test -d smoke/alchemist/data && echo "Portable data folder created."
       - name: Smoke test the packaged app (Windows)
