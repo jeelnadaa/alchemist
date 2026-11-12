@@ -1,6 +1,6 @@
 [package]
 name = "alchemist"
-version = "0.1.0"
+version = "0.2.0"
 description = "Alchemist: record, edit, convert, compress and enhance video. Locally."
 authors = ["Alchemist contributors"]
 edition = "2021"
