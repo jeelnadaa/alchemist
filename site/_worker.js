@@ -47,6 +47,40 @@ function json(body, status = 200, maxAge = CACHE_SECONDS) {
   });
 }
 
+/** Build the release summary from latest.json, SHA256SUMS.txt and sizes.json. */
+async function fromReleaseFiles(repo) {
+  const base = `https://github.com/${repo}/releases/latest/download/`;
+  const get = (name) => fetch(base + name, { headers: { "user-agent": "alchemist-website" }, redirect: "follow" });
+  const [m, s, z] = await Promise.all([get("latest.json"), get("SHA256SUMS.txt"), get("sizes.json")]);
+  if (!m.ok || !s.ok) return null;
+  const manifest = await m.json();
+  const version = String(manifest.version || "").replace(/^v/, "");
+  if (!version) return null;
+  const sums = parseSums(await s.text());
+  const sizes = z.ok ? await z.json().catch(() => ({})) : {};
+  const tag = `v${version}`;
+  const assets = Object.keys(sums)
+    .map((name) => {
+      const p = parseAsset(name);
+      if (!p) return null;
+      const size = sizes[name.replace(version, "VERSION")] ?? sizes[name] ?? null;
+      return { name, url: `https://github.com/${repo}/releases/download/${tag}/${name}`, size, sha256: sums[name], downloads: null, ...p };
+    })
+    .filter(Boolean);
+  if (!assets.length) return null;
+  return {
+    status: "ok",
+    repo,
+    version,
+    name: tag,
+    published: manifest.pub_date || null,
+    url: `https://github.com/${repo}/releases/tag/${tag}`,
+    notes: String(manifest.notes || "").slice(0, 20000),
+    checksums: `https://github.com/${repo}/releases/download/${tag}/SHA256SUMS.txt`,
+    assets,
+  };
+}
+
 async function latest(context) {
   const { env, request, waitUntil } = context;
   const repo = env.GITHUB_REPO || DEFAULT_REPO;
@@ -70,15 +104,25 @@ async function latest(context) {
   try {
     res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
   } catch {
-    return json({ status: "error" }, 502, 30);
+    res = null;
   }
 
-  if (res.status === 404) {
+  if (res && res.status === 404) {
     const r = json({ status: "none", repo }, 200, 120);
     waitUntil(cache.put(cacheKey, r.clone()));
     return r;
   }
-  if (!res.ok) return json({ status: "error", code: res.status }, 502, 30);
+  if (!res || !res.ok) {
+    // The API is rate-limited per IP and Cloudflare's outgoing IPs are shared.
+    // The release's own files are plain downloads and say everything we need.
+    const body = await fromReleaseFiles(repo).catch(() => null);
+    if (body) {
+      const out = json(body);
+      waitUntil(cache.put(cacheKey, out.clone()));
+      return out;
+    }
+    return json({ status: "error", code: res ? res.status : 0 }, 502, 30);
+  }
 
   const rel = await res.json();
 
