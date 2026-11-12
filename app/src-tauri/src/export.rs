@@ -240,6 +240,212 @@ fn text_y(position: &str) -> &'static str {
     }
 }
 
+/// Clips of one track with transitions applied: a crossfade starts the clip
+/// earlier (reaching back into its source) with a fade-in over the clip
+/// before; a dip fades the previous clip out and this one in. Ends never move.
+/// Returns (clip, extra seconds added before its original start).
+pub fn with_transitions(track: &Track) -> Vec<(Clip, f64)> {
+    let mut out: Vec<(Clip, f64)> = track.clips.iter().map(|c| (c.clone(), 0.0)).collect();
+    out.sort_by(|a, b| {
+        a.0.start
+            .partial_cmp(&b.0.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for i in 1..out.len() {
+        let Some(tr) = out[i].0.transition_in.clone() else {
+            continue;
+        };
+        let d = tr.duration.max(0.0);
+        if d <= 0.0 {
+            continue;
+        }
+        let prev_end = out[i - 1].0.end();
+        if (prev_end - out[i].0.start).abs() > 0.05 {
+            continue; // only between touching clips
+        }
+        match tr.kind.as_str() {
+            "dip" => {
+                let half = d / 2.0;
+                let prev_len = out[i - 1].0.length();
+                let len = out[i].0.length();
+                out[i - 1].0.fade_out = out[i - 1].0.fade_out.max(half.min(prev_len / 2.0));
+                out[i].0.fade_in = out[i].0.fade_in.max(half.min(len / 2.0));
+            }
+            _ => {
+                let c = &out[i].0;
+                if c.freeze || c.reverse {
+                    continue;
+                }
+                let available = c.in_point / c.speed.max(0.01);
+                let d = d
+                    .min(available)
+                    .min(out[i - 1].0.length() / 2.0)
+                    .min(c.length() / 2.0);
+                if d < 0.04 {
+                    continue;
+                }
+                let c = &mut out[i].0;
+                c.start -= d;
+                c.in_point -= d * c.speed;
+                c.fade_in = c.fade_in.max(d);
+                out[i].1 = d;
+                out[i - 1].0.fade_out = out[i - 1].0.fade_out.max(d);
+            }
+        }
+    }
+    out
+}
+
+/// Volume over clip-local time as an FFmpeg expression of `t` (seconds since
+/// the clip's audio starts). `offset` shifts keys when a transition starts the clip early.
+pub fn volume_expr(base: f64, keys: &[crate::project::VolumeKey], offset: f64) -> String {
+    if keys.is_empty() {
+        return f(base);
+    }
+    let mut k: Vec<_> = keys.to_vec();
+    k.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    let tt = |x: f64| f(x + offset);
+    let mut e = f(k.last().unwrap().v.max(0.0));
+    for i in (0..k.len()).rev() {
+        if i == 0 {
+            e = format!("if(lt(t,{}),{},{e})", tt(k[0].t), f(k[0].v.max(0.0)));
+        } else {
+            let (a, b) = (k[i - 1], k[i]);
+            let span = (b.t - a.t).max(1e-3);
+            e = format!(
+                "if(lt(t,{}),{}+({}-{})*(t-{})/{},{e})",
+                tt(b.t),
+                f(a.v.max(0.0)),
+                f(b.v.max(0.0)),
+                f(a.v.max(0.0)),
+                tt(a.t),
+                f(span)
+            );
+        }
+    }
+    format!("{}*({e})", f(base))
+}
+
+/// Draw an arrow from (x1,y1) to (x2,y2) into a transparent RGBA canvas and save it as PNG.
+pub fn arrow_png(
+    path: &Path,
+    w: u32,
+    h: u32,
+    from: (f64, f64),
+    to: (f64, f64),
+    rgb: (u8, u8, u8),
+) -> Result<(), String> {
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let th = (h as f64 * 0.009).max(3.0);
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let (ux, uy) = (dx / len, dy / len);
+    let head_len = (th * 5.0).min(len * 0.6);
+    let head_w = th * 3.2;
+    let base = (to.0 - ux * head_len, to.1 - uy * head_len);
+    let left = (base.0 - uy * head_w, base.1 + ux * head_w);
+    let right = (base.0 + uy * head_w, base.1 - ux * head_w);
+    let minx = (from.0.min(to.0).min(left.0).min(right.0) - th * 2.0)
+        .floor()
+        .max(0.0) as u32;
+    let maxx = (from.0.max(to.0).max(left.0).max(right.0) + th * 2.0)
+        .ceil()
+        .min(w as f64 - 1.0)
+        .max(0.0) as u32;
+    let miny = (from.1.min(to.1).min(left.1).min(right.1) - th * 2.0)
+        .floor()
+        .max(0.0) as u32;
+    let maxy = (from.1.max(to.1).max(left.1).max(right.1) + th * 2.0)
+        .ceil()
+        .min(h as f64 - 1.0)
+        .max(0.0) as u32;
+    let sign = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1)
+    };
+    for y in miny..=maxy {
+        for x in minx..=maxx {
+            // 4x supersampling for smooth edges.
+            let mut cover = 0.0;
+            for sy in 0..2 {
+                for sx in 0..2 {
+                    let px = x as f64 + 0.25 + sx as f64 * 0.5;
+                    let py = y as f64 + 0.25 + sy as f64 * 0.5;
+                    // Shaft: distance to segment from..base.
+                    let (bx, by) = (base.0 - from.0, base.1 - from.1);
+                    let l2 = (bx * bx + by * by).max(1e-9);
+                    let tt = (((px - from.0) * bx + (py - from.1) * by) / l2).clamp(0.0, 1.0);
+                    let (cx, cy) = (from.0 + bx * tt, from.1 + by * tt);
+                    let in_shaft = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() <= th / 2.0;
+                    let p = (px, py);
+                    let d1 = sign(p, to, left);
+                    let d2 = sign(p, left, right);
+                    let d3 = sign(p, right, to);
+                    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                    if in_shaft || !(neg && pos) {
+                        cover += 0.25;
+                    }
+                }
+            }
+            if cover > 0.0 {
+                let i = ((y * w + x) * 4) as usize;
+                buf[i] = rgb.0;
+                buf[i + 1] = rgb.1;
+                buf[i + 2] = rgb.2;
+                buf[i + 3] = (cover * 255.0) as u8;
+            }
+        }
+    }
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut wr| wr.write_image_data(&buf))
+        .map_err(|e| e.to_string())
+}
+
+fn rgb_of(hex: &str) -> (u8, u8, u8) {
+    let c = hex.trim_start_matches('#');
+    if c.len() == 6 {
+        if let Ok(n) = u32::from_str_radix(c, 16) {
+            return ((n >> 16) as u8, (n >> 8) as u8, n as u8);
+        }
+    }
+    (0x5b, 0x8c, 0xff)
+}
+
+/// Where the main picture sits inside the padded box (x, y, w, h).
+fn content_rect(p: &Project, w: u32, h: u32, box_w: u32, box_h: u32) -> (u32, u32, u32, u32) {
+    let main_media = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == "video")
+        .flat_map(|t| t.clips.iter())
+        .find_map(|c| {
+            c.media_id
+                .as_ref()
+                .and_then(|id| p.media(id))
+                .map(|m| (m, c.transform.rotate.rem_euclid(180) == 90))
+        });
+    let (cw, ch) = match main_media {
+        Some((m, rotated)) if m.width > 0 && m.height > 0 => {
+            let (mw, mh) = if rotated {
+                (m.height as f64, m.width as f64)
+            } else {
+                (m.width as f64, m.height as f64)
+            };
+            let s = (box_w as f64 / mw).min(box_h as f64 / mh);
+            (
+                ((mw * s).round() as u32).min(box_w),
+                ((mh * s).round() as u32).min(box_h),
+            )
+        }
+        _ => (box_w, box_h),
+    };
+    ((w - cw) / 2, (h - ch) / 2, cw, ch)
+}
+
 /// Build the full export. `font` is a TTF bundled with the app; `tmp` is a
 /// scratch folder for text files (avoids all drawtext escaping problems).
 pub fn build(
@@ -313,6 +519,24 @@ pub fn build(
     );
     let mut last = "base".to_string();
     let mut k = 0;
+    let (cx, cy, cw, ch) = content_rect(p, w, h, box_w, box_h);
+
+    // 1b. Soft drop shadow under the picture, made once and looped.
+    if p.settings.shadow && pad > 0 {
+        let off = (h / 90).max(2);
+        let blur = ((pad / 2).max(4)).min(((cw.min(ch)) / 4).max(2)).min(40);
+        let _ = write!(
+            g,
+            ";color=c=black:s={w}x{h}:r={}:d=0.1,format=rgba,geq=r=0:g=0:b=0:a='if(between(X\\,{}\\,{})*between(Y\\,{}\\,{})\\,150\\,0)',boxblur=luma_radius={blur}:luma_power=2:alpha_radius={blur}:alpha_power=2,trim=end_frame=1,loop=loop=-1:size=1:start=0,trim=duration={}[shadow];[{last}][shadow]overlay=format=auto[shadowed]",
+            limits::fps_to_ffmpeg(fps),
+            cx,
+            cx + cw,
+            cy + off,
+            cy + ch + off,
+            f(total)
+        );
+        last = "shadowed".into();
+    }
 
     // 2. Video tracks, bottom to top. Overlay tracks (camera, images) are
     //    added after the zoom so they stay put while the screen zooms.
@@ -323,7 +547,8 @@ pub fn build(
             .filter(|t| kinds.contains(&t.kind.as_str()))
             .collect();
         for t in &visual {
-            for c in &t.clips {
+            for (c, _) in with_transitions(t) {
+                let c = &c;
                 let Some(mid) = &c.media_id else { continue };
                 let Some(&idx) = inputs.index.get(mid) else {
                     continue;
@@ -358,36 +583,8 @@ pub fn build(
 
     // 3. Rounded corners: a static mask in the background colour, made once and looped.
     if p.settings.radius > 0 && pad > 0 {
-        // Round the picture itself: fit the main video's shape into the padded box.
-        let main_media = p
-            .tracks
-            .iter()
-            .filter(|t| t.kind == "video")
-            .flat_map(|t| t.clips.iter())
-            .find_map(|c| {
-                c.media_id
-                    .as_ref()
-                    .and_then(|id| p.media(id))
-                    .map(|m| (m, c.transform.rotate.rem_euclid(180) == 90))
-            });
-        let (cw, ch) = match main_media {
-            Some((m, rotated)) if m.width > 0 && m.height > 0 => {
-                let (mw, mh) = if rotated {
-                    (m.height as f64, m.width as f64)
-                } else {
-                    (m.width as f64, m.height as f64)
-                };
-                let s = (box_w as f64 / mw).min(box_h as f64 / mh);
-                (
-                    ((mw * s).round() as u32).min(box_w),
-                    ((mh * s).round() as u32).min(box_h),
-                )
-            }
-            _ => (box_w, box_h),
-        };
-        let (box_w, box_h) = (cw, ch);
+        let (bx, by, box_w, box_h) = (cx, cy, cw, ch);
         let r = p.settings.radius.min(box_w.min(box_h) / 2);
-        let (bx, by) = ((w - cw) / 2, (h - ch) / 2);
         let a = format!(
             "if(lte(pow(max(max({bx}+{r}-X\\,X-({bx}+{box_w}-{r}))\\,0)\\,2)+pow(max(max({by}+{r}-Y\\,Y-({by}+{box_h}-{r}))\\,0)\\,2)\\,{r}*{r})*between(X\\,{bx}\\,{bx}+{box_w})*between(Y\\,{by}\\,{by}+{box_h})\\,0\\,255)"
         );
@@ -417,7 +614,8 @@ pub fn build(
     // 4b. Overlays (camera bubble, images) on top of the zoomed picture.
     place(&mut g, &mut last, &mut k, &["overlay"]);
 
-    // 5. Shapes: boxes, highlights, blur and pixelate regions.
+    // 5. Shapes: boxes, highlights, blur and pixelate regions, arrows.
+    let mut extra_inputs: Vec<String> = Vec::new();
     for t in p
         .tracks
         .iter()
@@ -433,6 +631,30 @@ pub fn build(
             );
             let en = format!("enable='between(t,{},{})'", f(c.start), f(c.end()));
             let color = hex_color(&sh.color, "0x5b8cff");
+            if sh.shape == "arrow" {
+                std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+                let png_path = tmp.join(format!("arrow-{k}.png"));
+                let from = (x * w as f64, y * h as f64);
+                let to = ((x + rw) * w as f64, (y + rh) * h as f64);
+                arrow_png(&png_path, w, h, from, to, rgb_of(&sh.color))?;
+                temp_files.push(png_path.clone());
+                let idx = inputs.index.len() + extra_inputs.len() / 6;
+                extra_inputs.extend([
+                    "-loop".into(),
+                    "1".into(),
+                    "-t".into(),
+                    f(total),
+                    "-i".into(),
+                    png_path.to_string_lossy().to_string(),
+                ]);
+                let _ = write!(
+                    g,
+                    ";[{idx}:v]format=rgba[ar{k}];[{last}][ar{k}]overlay=0:0:{en}[sh{k}]"
+                );
+                last = format!("sh{k}");
+                k += 1;
+                continue;
+            }
             match sh.shape.as_str() {
                 "blur" | "pixelate" => {
                     // boxblur's radius must fit in half the (chroma-subsampled) region.
@@ -558,7 +780,8 @@ pub fn build(
         if t.muted {
             continue;
         }
-        for c in &t.clips {
+        for (c, early) in with_transitions(t) {
+            let c = &c;
             let Some(mid) = &c.media_id else { continue };
             let Some(&idx) = inputs.index.get(mid) else {
                 continue;
@@ -579,7 +802,14 @@ pub fn build(
                 parts.push("areverse".into());
             }
             parts.extend(atempo_chain(c.speed));
-            parts.push(format!("volume={}", f(c.volume * t.volume)));
+            if c.volume_keys.is_empty() {
+                parts.push(format!("volume={}", f(c.volume * t.volume)));
+            } else {
+                parts.push(format!(
+                    "volume='{}':eval=frame",
+                    volume_expr(c.volume * t.volume, &c.volume_keys, early)
+                ));
+            }
             if c.clean_voice {
                 parts.push("highpass=f=80,afftdn=nr=12:nf=-40".into());
             }
@@ -622,6 +852,7 @@ pub fn build(
 
     // 9. Encoders.
     let mut args = inputs.args;
+    args.extend(extra_inputs);
     let graph_file = tmp.join("graph.txt");
     std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
 
@@ -772,6 +1003,7 @@ mod tests {
     fn caps() -> Capabilities {
         let mut c = Capabilities::default();
         c.encoders.push("libx264".into());
+        c.filters.push("drawtext".into());
         c
     }
 
@@ -816,6 +1048,8 @@ mod tests {
             text: None,
             shape: None,
             clean_voice: false,
+            volume_keys: vec![],
+            transition_in: None,
         };
         p.tracks[0].clips.push(mk("c1", "m1", 0.0, 0.0, 20.0));
         p.tracks[0].clips.push(mk("c2", "m1", 20.0, 30.0, 40.0));
@@ -990,6 +1224,8 @@ mod tests {
                 color: String::new(),
             }),
             clean_voice: false,
+            volume_keys: vec![],
+            transition_in: None,
         });
         let (g, _) = graph(&p, &req(Preset::Share));
         assert!(g.contains("color=c=0x1e2a4a"));
@@ -1028,6 +1264,7 @@ mod tests {
     #[test]
     fn ass_fallback_when_drawtext_is_missing() {
         let mut caps = caps();
+        caps.filters.retain(|f| f != "drawtext");
         caps.filters.push("ass".into());
         let tmp = tempfile::tempdir().unwrap();
         let plan = build(
@@ -1045,5 +1282,102 @@ mod tests {
         assert!(doc.contains("Dialogue: 0,0:00:04.00,0:00:07.00,S0,,0,0,0,,{\\fad(300,300)}Click: Publish 'now' 100%"));
         assert_eq!(ass_color("#5b8cff", 0), "&H00FF8C5B");
         assert_eq!(ass_time(3661.256), "1:01:01.26");
+    }
+
+    #[test]
+    fn crossfade_and_dip_transitions() {
+        let mut p = demo();
+        p.tracks[0].clips[1].transition_in = Some(Transition {
+            kind: "crossfade".into(),
+            duration: 1.0,
+        });
+        let v = with_transitions(&p.tracks[0]);
+        assert!((v[1].0.start - 19.0).abs() < 1e-9 && (v[1].0.in_point - 29.0).abs() < 1e-9);
+        assert_eq!(v[1].0.end(), 30.0);
+        assert_eq!(v[1].1, 1.0);
+        assert_eq!(v[0].0.fade_out, 1.0);
+        let (g, _) = graph(&p, &req(Preset::Share));
+        assert!(g.contains("trim=start=29:end=40"));
+        assert!(g.contains("between(t,19,30)"));
+        p.tracks[0].clips[1].transition_in = Some(Transition {
+            kind: "dip".into(),
+            duration: 1.0,
+        });
+        let v = with_transitions(&p.tracks[0]);
+        assert_eq!(
+            (v[0].0.fade_out, v[1].0.fade_in, v[1].0.start),
+            (0.5, 0.5, 20.0)
+        );
+    }
+
+    #[test]
+    fn volume_keys_become_a_curve() {
+        let keys = vec![VolumeKey { t: 1.0, v: 1.0 }, VolumeKey { t: 3.0, v: 0.2 }];
+        let e = volume_expr(0.5, &keys, 0.0);
+        assert_eq!(e, "0.5*(if(lt(t,1),1,if(lt(t,3),1+(0.2-1)*(t-1)/2,0.2)))");
+        assert!(volume_expr(1.0, &keys, 2.0).contains("lt(t,3)"));
+        assert_eq!(volume_expr(0.8, &[], 0.0), "0.8");
+        let mut p = demo();
+        p.tracks[2].clips[0].volume_keys = keys;
+        let (g, _) = graph(&p, &req(Preset::Share));
+        assert!(g.contains(":eval=frame"));
+    }
+
+    #[test]
+    fn arrows_and_shadow() {
+        let mut p = demo();
+        p.settings.padding = 60;
+        p.settings.shadow = true;
+        p.tracks[1].clips.push(Clip {
+            id: "ar".into(),
+            start: 1.0,
+            out: 2.0,
+            shape: Some(ShapeProps {
+                shape: "arrow".into(),
+                rect: [0.2, 0.2, 0.3, 0.2],
+                color: "#ff0000".into(),
+            }),
+            ..Default::default()
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = build(
+            &p,
+            &req(Preset::Share),
+            &caps(),
+            Path::new("f.ttf"),
+            tmp.path(),
+        )
+        .unwrap();
+        let g = std::fs::read_to_string(tmp.path().join("graph.txt")).unwrap();
+        assert!(g.contains("[shadow]") && g.contains("boxblur=luma_radius"));
+        assert!(g.contains("[2:v]format=rgba"), "{g}");
+        assert_eq!(plan.args.iter().filter(|a| *a == "-i").count(), 3);
+        let arrow = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("arrow-")
+            })
+            .expect("arrow png written");
+        let d = png::Decoder::new(std::fs::File::open(arrow).unwrap());
+        let mut r = d.read_info().unwrap();
+        let mut buf = vec![0; r.output_buffer_size()];
+        let info = r.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (1920, 1080));
+        // Arrow tip area is painted red; a far corner stays transparent.
+        let at = |x: u32, y: u32| {
+            buf[((y * 1920 + x) * 4) as usize..((y * 1920 + x) * 4 + 4) as usize].to_vec()
+        };
+        let mid = at(
+            ((0.2 + 0.15) * 1920.0) as u32,
+            ((0.2 + 0.1) * 1080.0) as u32,
+        );
+        assert_eq!(&mid[..3], &[255, 0, 0]);
+        assert!(mid[3] > 200);
+        assert_eq!(at(1900, 1060)[3], 0);
     }
 }

@@ -30,12 +30,14 @@ export interface RecordStatus { recording: boolean; paused: boolean; seconds: nu
 export interface Transform { crop?: [number, number, number, number] | null; rotate: number; flipH: boolean; flipV: boolean; scale: number; x: number; y: number }
 export interface TextProps { text: string; style: string; size: number; position: string; color: string; animation: string }
 export interface ShapeProps { shape: string; rect: [number, number, number, number]; color: string }
-export interface Clip { id: string; mediaId?: string | null; start: number; in: number; out: number; speed: number; volume: number; fadeIn: number; fadeOut: number; reverse: boolean; freeze: boolean; transform: Transform; text?: TextProps | null; shape?: ShapeProps | null; cleanVoice: boolean }
+export interface VolumeKey { t: number; v: number }
+export interface Transition { kind: "crossfade" | "dip"; duration: number }
+export interface Clip { id: string; mediaId?: string | null; start: number; in: number; out: number; speed: number; volume: number; fadeIn: number; fadeOut: number; reverse: boolean; freeze: boolean; transform: Transform; text?: TextProps | null; shape?: ShapeProps | null; cleanVoice: boolean; volumeKeys?: VolumeKey[]; transitionIn?: Transition | null }
 export interface Track { id: string; kind: "video" | "overlay" | "text" | "audio"; name: string; muted: boolean; volume: number; clips: Clip[] }
 export interface Media { id: string; path: string; kind: "video" | "audio" | "image"; duration: number; width: number; height: number; hasAudio: boolean; missing: boolean }
 export interface Zoom { start: number; end: number; scale: number; x: number; y: number }
 export interface Caption { start: number; end: number; text: string }
-export interface Project { version: number; id: string; name: string; created: number; modified: number; settings: { width: number; height: number; fps: number; background: string; padding: number; radius: number }; media: Media[]; tracks: Track[]; zooms: Zoom[]; zoomSmoothness: number; captions: Caption[]; markers: { t: number; label: string }[]; inPoint?: number | null; outPoint?: number | null; events?: string | null }
+export interface Project { version: number; id: string; name: string; created: number; modified: number; settings: { width: number; height: number; fps: number; background: string; padding: number; radius: number; shadow?: boolean }; media: Media[]; tracks: Track[]; zooms: Zoom[]; zoomSmoothness: number; captions: Caption[]; markers: { t: number; label: string }[]; inPoint?: number | null; outPoint?: number | null; events?: string | null }
 export interface ProjectSummary { id: string; name: string; modified: number; duration: number; thumb?: string | null }
 export interface ExportRequest { preset: "share" | "vertical" | "small" | "gif" | "audio" | "custom"; output: string; range?: [number, number] | null; width?: number | null; height?: number | null; fps?: number | null; burnCaptions: boolean; sidecarCaptions: boolean; loudness: boolean; useHardware: boolean; targetMb?: number | null }
 

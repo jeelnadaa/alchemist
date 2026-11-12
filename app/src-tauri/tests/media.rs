@@ -320,6 +320,8 @@ fn project_export_renders_everything() {
         text: None,
         shape: None,
         clean_voice: true,
+        volume_keys: vec![],
+        transition_in: None,
     };
     p.tracks[0].clips.push(mk("a", 0.0, 0.0, 2.0));
     let mut fast = mk("b", 2.0, 2.0, 6.0);
@@ -373,6 +375,27 @@ fn project_export_renders_everything() {
     });
     let text_track = p.tracks.iter_mut().find(|t| t.kind == "text").unwrap();
     text_track.clips.extend([text, blur, hl]);
+    p.settings.shadow = true;
+    p.tracks[0].clips[1].transition_in = Some(project::Transition {
+        kind: "crossfade".into(),
+        duration: 0.5,
+    });
+    p.tracks[0].clips[0].volume_keys = vec![
+        project::VolumeKey { t: 0.0, v: 1.0 },
+        project::VolumeKey { t: 1.5, v: 0.2 },
+    ];
+    let arrow_track = p.tracks.iter_mut().find(|t| t.kind == "text").unwrap();
+    arrow_track.clips.push(project::Clip {
+        id: "arrow".into(),
+        start: 0.0,
+        out: 5.0,
+        shape: Some(project::ShapeProps {
+            shape: "arrow".into(),
+            rect: [0.7, 0.2, -0.2, 0.15],
+            color: "#ff3b30".into(),
+        }),
+        ..Default::default()
+    });
     p.zooms.push(project::Zoom {
         start: 0.5,
         end: 2.5,

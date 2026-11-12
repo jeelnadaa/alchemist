@@ -32,8 +32,19 @@ export function openExport(project: Project, onStarted: (job: Job) => void) {
     { id: "audio", name: "Audio only", detail: "MP3 of all the sound tracks.", size: () => `≈ ${bytes(len * 24_000)}`, ext: "mp3" },
   ];
 
+  type Saved = { name: string; preset: Preset; custom: { width: number; height: number; fps: number } | null; loudness: boolean; burn: boolean; sidecar: boolean; targetMb: number };
+
   modal((close) => {
     const list = h("div", { class: "col", role: "radiogroup", "aria-label": "Export preset" });
+    const savedBox = h("div", { class: "chips", "aria-label": "Your presets" });
+    const renderSaved = () => {
+      savedBox.replaceChildren();
+      for (const sp of (store.settings.exportPresets as Saved[] | undefined) || []) {
+        savedBox.appendChild(h("button", { type: "button", title: "Use this preset", onclick: () => { preset = sp.preset; custom = sp.custom; loudness = sp.loudness; burn = sp.burn; sidecar = sp.sidecar; targetMb = sp.targetMb; renderList(); toast(`Using "${sp.name}".`); } }, sp.name));
+        savedBox.appendChild(h("button", { type: "button", "aria-label": `Delete preset ${sp.name}`, title: "Delete", onclick: () => { store.set({ exportPresets: ((store.settings.exportPresets as Saved[]) || []).filter((x) => x.name !== sp.name) }).then(renderSaved); } }, "×"));
+      }
+    };
+    renderSaved();
     const note = h("span", { class: "grow muted small" });
     const renderList = () => {
       list.replaceChildren();
@@ -54,10 +65,23 @@ export function openExport(project: Project, onStarted: (job: Job) => void) {
       hasCaptions ? toggleRow("Save captions as an .srt file too", "Players can turn them on and off.", sidecar, (v) => (sidecar = v)) : null,
       toggleRow("Even out the loudness", "Targets −14 LUFS, the level most sites use.", loudness, (v) => (loudness = v)),
       h("label", { class: "field" }, "Small file target (MB)", h("input", { class: "input", type: "number", min: "1", value: String(targetMb), onchange: (e: Event) => { targetMb = +(e.target as HTMLInputElement).value || 25; renderList(); } })),
-      h("div", { class: "field" }, "Custom size and frame rate", customFields((c) => (custom = c))));
+      h("div", { class: "field" }, "Custom size and frame rate", customFields((c) => (custom = c))),
+      (() => {
+        const nameIn = h("input", { class: "input", placeholder: "Preset name", "aria-label": "Preset name", style: { maxWidth: "240px" } }) as HTMLInputElement;
+        const save = () => {
+          const name = nameIn.value.trim() || presets.find((x) => x.id === preset)?.name || "My preset";
+          const list2 = ((store.settings.exportPresets as Saved[]) || []).filter((x) => x.name !== name);
+          list2.push({ name, preset, custom, loudness, burn, sidecar, targetMb });
+          store.set({ exportPresets: list2 }).then(renderSaved);
+          nameIn.value = "";
+          toast(`Saved "${name}".`);
+        };
+        nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+        return h("div", { class: "row" }, nameIn, h("button", { type: "button", class: "btn", onclick: save }, "Save as preset"));
+      })());
     return h("div", { class: "dialog" },
       h("header", null, h("h2", null, `Export "${project.name}"`), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close", 16))),
-      h("div", { class: "content" }, list,
+      h("div", { class: "content" }, savedBox, list,
         h("div", { class: "grid2" }, h("label", { class: "field" }, "File name", nameInput), h("div", { class: "field" }, "Save to", folderBtn)),
         h("button", { type: "button", class: "btn", style: { justifyContent: "space-between" }, onclick: () => more.classList.toggle("hidden") }, "More options", h("span", { class: "tiny muted" }, "range, captions, loudness, size")),
         more),

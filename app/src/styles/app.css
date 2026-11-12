@@ -325,3 +325,6 @@ body.bar-window, body.picker-window { background: transparent; }
 .timecode { width: 112px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text); text-align: right; }
 .timecode:hover { border-color: var(--line); background: var(--raised); }
 .timecode:focus { outline: none; border-color: var(--accent); background: var(--raised); text-align: left; }
+
+.arrow-handle { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px var(--accent); cursor: grab; pointer-events: auto; }
+.arrow-shape.selected line[stroke="transparent"] { stroke: color-mix(in srgb, var(--accent) 25%, transparent); }

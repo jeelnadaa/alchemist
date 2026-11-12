@@ -141,6 +141,38 @@ describe("timeline model", () => {
     expect(h2.undoStack.length).toBe(0);
   });
 
+  it("transitions match the export rules", () => {
+    const p = project();
+    p.tracks[0].clips[1].transitionIn = { kind: "crossfade", duration: 1 };
+    const v = M.withTransitions(p.tracks[0]);
+    expect(v[1][0].start).toBe(9);
+    expect(v[1][0].in).toBe(19);
+    expect(v[1][1]).toBe(1);
+    expect(M.clipEnd(v[1][0])).toBe(20);
+    expect(v[0][0].fadeOut).toBe(1);
+    p.tracks[0].clips[1].transitionIn = { kind: "dip", duration: 1 };
+    const d = M.withTransitions(p.tracks[0]);
+    expect([d[0][0].fadeOut, d[1][0].fadeIn, d[1][0].start]).toEqual([0.5, 0.5, 10]);
+    expect(M.previousTouching(p, "c2")?.id).toBe("c1");
+    expect(M.previousTouching(p, "c1")).toBeNull();
+  });
+
+  it("volume points interpolate and survive a split", () => {
+    const keys = [{ t: 1, v: 1 }, { t: 3, v: 0.2 }];
+    expect(M.volumeAt(keys, 0)).toBe(1);
+    expect(M.volumeAt(keys, 2)).toBeCloseTo(0.6);
+    expect(M.volumeAt(keys, 9)).toBe(0.2);
+    expect(M.volumeAt(undefined, 2)).toBe(1);
+    const p = project();
+    p.tracks[2].clips[0].volumeKeys = keys;
+    const { project: q, rightId } = M.split(p, "a1", 2);
+    const left = M.find(q, "a1")!.clip.volumeKeys!;
+    const right = M.find(q, rightId!)!.clip.volumeKeys!;
+    expect(left[left.length - 1]).toEqual({ t: 2, v: expect.closeTo(0.6) });
+    expect(right[0]).toEqual({ t: 0, v: expect.closeTo(0.6) });
+    expect(right[1]).toEqual({ t: 1, v: 0.2 });
+  });
+
   it("parses typed times", () => {
     expect(M.parseTime("83")).toBe(83);
     expect(M.parseTime("1:23")).toBe(83);

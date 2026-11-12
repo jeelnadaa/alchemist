@@ -506,6 +506,8 @@ async fn project_from_recording(
             text: None,
             shape: None,
             clean_voice: false,
+            volume_keys: vec![],
+            transition_in: None,
         };
         let screen = mk_media(
             video,

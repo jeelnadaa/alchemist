@@ -26,6 +26,9 @@ pub struct ProjectSettings {
     pub padding: u32,
     #[serde(default)]
     pub radius: u32,
+    /// Soft drop shadow under the picture (app-demo look).
+    #[serde(default)]
+    pub shadow: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -98,6 +101,22 @@ pub struct ShapeProps {
     pub color: String,
 }
 
+/// A volume point, `t` seconds from the clip's start on the timeline.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct VolumeKey {
+    pub t: f64,
+    pub v: f64,
+}
+
+/// How a clip enters from the clip before it on the same track.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Transition {
+    /// "crossfade" (blend into the previous clip) or "dip" (fade through the background).
+    pub kind: String,
+    pub duration: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
@@ -130,6 +149,37 @@ pub struct Clip {
     pub shape: Option<ShapeProps>,
     #[serde(default)]
     pub clean_voice: bool,
+    #[serde(default)]
+    pub volume_keys: Vec<VolumeKey>,
+    #[serde(default)]
+    pub transition_in: Option<Transition>,
+}
+
+impl Default for Clip {
+    fn default() -> Self {
+        Clip {
+            id: String::new(),
+            media_id: None,
+            start: 0.0,
+            in_point: 0.0,
+            out: 0.0,
+            speed: 1.0,
+            volume: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            reverse: false,
+            freeze: false,
+            transform: Transform {
+                scale: 1.0,
+                ..Default::default()
+            },
+            text: None,
+            shape: None,
+            clean_voice: false,
+            volume_keys: Vec::new(),
+            transition_in: None,
+        }
+    }
 }
 
 impl Clip {
@@ -238,6 +288,7 @@ impl Project {
                 background: "#000000".into(),
                 padding: 0,
                 radius: 0,
+                shadow: false,
             },
             media: vec![],
             tracks: vec![
@@ -553,6 +604,8 @@ mod tests {
             text: None,
             shape: None,
             clean_voice: false,
+            volume_keys: vec![],
+            transition_in: None,
         }
     }
 

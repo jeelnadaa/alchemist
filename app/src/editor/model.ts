@@ -50,7 +50,16 @@ export function split(p: Project, clipId: string, t: number): { project: Project
   const { clip, track } = f;
   if (t <= clip.start + MIN_CLIP || t >= clipEnd(clip) - MIN_CLIP) return { project: p, rightId: null };
   const sourceAt = clip.freeze ? clip.in : clip.in + (t - clip.start) * clip.speed;
-  const right: Clip = { ...clone(clip), id: uid(), start: t, in: clip.freeze ? clip.in : sourceAt, fadeIn: 0 };
+  const right: Clip = { ...clone(clip), id: uid(), start: t, in: clip.freeze ? clip.in : sourceAt, fadeIn: 0, transitionIn: null };
+  // Volume points are relative to the clip start: split them between the halves.
+  const cut = t - clip.start;
+  if (clip.volumeKeys?.length) {
+    right.volumeKeys = clip.volumeKeys.filter((k) => k.t >= cut).map((k) => ({ t: k.t - cut, v: k.v }));
+    const at = volumeAt(clip.volumeKeys, cut);
+    if (right.volumeKeys.length && right.volumeKeys[0].t > 0) right.volumeKeys.unshift({ t: 0, v: at });
+    clip.volumeKeys = clip.volumeKeys.filter((k) => k.t < cut);
+    if (clip.volumeKeys.length) clip.volumeKeys.push({ t: cut, v: at });
+  }
   if (clip.freeze) {
     right.out = right.in + (clipEnd(clip) - t);
     clip.out = clip.in + (t - clip.start);
@@ -261,9 +270,10 @@ export function addText(p: Project, at: number, text = "Your text", style = "cal
   return { project: next, id: c.id };
 }
 
-export function addShape(p: Project, at: number, shape: "rect" | "highlight" | "blur" | "pixelate"): { project: Project; id: string } {
+export function addShape(p: Project, at: number, shape: "rect" | "highlight" | "blur" | "pixelate" | "arrow"): { project: Project; id: string } {
   const next = clone(p);
-  const c = newClip({ start: at, in: 0, out: 3, shape: { shape, rect: [0.35, 0.35, 0.3, 0.2], color: "#5b8cff" } });
+  const rect: [number, number, number, number] = shape === "arrow" ? [0.3, 0.3, 0.2, 0.15] : [0.35, 0.35, 0.3, 0.2];
+  const c = newClip({ start: at, in: 0, out: 3, shape: { shape, rect, color: shape === "arrow" ? "#ff3b30" : "#5b8cff" } });
   textTrack(next).clips.push(c);
   sortClips(textTrack(next));
   return { project: next, id: c.id };
@@ -357,4 +367,52 @@ export function parseTime(input: string, fps = 30): number | null {
   if (n.length === 2) return n[0] * 60 + n[1];
   if (n.length === 3) return n[0] * 3600 + n[1] * 60 + n[2];
   return n[0] * 3600 + n[1] * 60 + n[2] + n[3] / Math.max(1, fps);
+}
+
+// ---- Transitions and volume points (same rules as export::with_transitions / volume_expr).
+
+/** Volume multiplier at clip-local time t from the clip's volume points (linear between points). */
+export function volumeAt(keys: { t: number; v: number }[] | undefined, t: number): number {
+  if (!keys || !keys.length) return 1;
+  const k = [...keys].sort((a, b) => a.t - b.t);
+  if (t <= k[0].t) return k[0].v;
+  for (let i = 1; i < k.length; i++) {
+    if (t < k[i].t) return k[i - 1].v + ((k[i].v - k[i - 1].v) * (t - k[i - 1].t)) / Math.max(1e-3, k[i].t - k[i - 1].t);
+  }
+  return k[k.length - 1].v;
+}
+
+/** A track's clips with transitions applied: [clip, seconds started early]. */
+export function withTransitions(track: Track): [Clip, number][] {
+  const out: [Clip, number][] = [...track.clips].sort((a, b) => a.start - b.start).map((c) => [{ ...c, transform: c.transform }, 0]);
+  for (let i = 1; i < out.length; i++) {
+    const tr = out[i][0].transitionIn;
+    if (!tr || tr.duration <= 0) continue;
+    const prev = out[i - 1][0];
+    if (Math.abs(clipEnd(prev) - out[i][0].start) > 0.05) continue;
+    if (tr.kind === "dip") {
+      const half = tr.duration / 2;
+      out[i - 1][0] = { ...prev, fadeOut: Math.max(prev.fadeOut, Math.min(half, clipLength(prev) / 2)) };
+      out[i][0] = { ...out[i][0], fadeIn: Math.max(out[i][0].fadeIn, Math.min(half, clipLength(out[i][0]) / 2)) };
+    } else {
+      const c = out[i][0];
+      if (c.freeze || c.reverse) continue;
+      const d = Math.min(tr.duration, c.in / Math.max(c.speed, 0.01), clipLength(prev) / 2, clipLength(c) / 2);
+      if (d < 0.04) continue;
+      out[i][0] = { ...c, start: c.start - d, in: c.in - d * c.speed, fadeIn: Math.max(c.fadeIn, d) };
+      out[i][1] = d;
+      out[i - 1][0] = { ...prev, fadeOut: Math.max(prev.fadeOut, d) };
+    }
+  }
+  return out;
+}
+
+/** The clip that comes right before `clipId` on its track, if they touch. */
+export function previousTouching(p: Project, clipId: string): Clip | null {
+  const f = find(p, clipId);
+  if (!f) return null;
+  const sorted = [...f.track.clips].sort((a, b) => a.start - b.start);
+  const i = sorted.findIndex((c) => c.id === clipId);
+  if (i <= 0) return null;
+  return Math.abs(clipEnd(sorted[i - 1]) - f.clip.start) <= 0.05 ? sorted[i - 1] : null;
 }

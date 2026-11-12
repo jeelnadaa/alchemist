@@ -297,20 +297,21 @@ class Editor {
       const m = this.p.media.find((x) => x.id === mediaId);
       if (j.status === "done" && m) {
         localStorage.setItem(`alc-proxy:${m.path}`, j.output);
-        fileUrl(j.output).then((u) => { this.urls.set(mediaId, u); this.videos.delete(mediaId); this.renderStage(); });
+        fileUrl(j.output).then((u) => { this.urls.set(mediaId, u); for (const k of [...this.videos.keys()]) if (k === mediaId || k.startsWith(`${mediaId}#`)) this.videos.delete(k); this.renderStage(); });
       }
     }
   }
 
-  element(m: Media): HTMLVideoElement | HTMLAudioElement | HTMLImageElement | null {
-    let el = this.videos.get(m.id);
+  element(m: Media, slot = 0): HTMLVideoElement | HTMLAudioElement | HTMLImageElement | null {
+    const key = slot ? `${m.id}#${slot}` : m.id;
+    let el = this.videos.get(key);
     const url = this.urls.get(m.id);
     if (!url) return null;
     if (!el) {
       if (m.kind === "image") el = h("img", { class: "media", src: url, alt: "" }) as HTMLImageElement;
       else if (m.kind === "audio") { el = new Audio(url); el.preload = "auto"; }
       else { el = h("video", { preload: "auto", playsInline: true }) as HTMLVideoElement; el.src = url; }
-      this.videos.set(m.id, el);
+      this.videos.set(key, el);
     }
     return el;
   }
@@ -341,12 +342,16 @@ class Editor {
     const visual = p.tracks.filter((t) => t.kind === "video" || t.kind === "overlay");
     const audible: { el: HTMLMediaElement; clip: Clip; track: Track }[] = [];
     const overlays = document.createDocumentFragment();
+    const anyVisible = visual.some((t) => M.clipAt(t, this.t));
     for (const track of visual) {
-      const c = M.clipAt(track, this.t);
-      if (!c || !c.mediaId) continue;
+      const slots = new Map<string, number>();
+      for (const [c] of M.withTransitions(track)) {
+      if (this.t < c.start || this.t >= M.clipEnd(c) || !c.mediaId) continue;
       const m = M.mediaOf(p, c);
       if (!m) continue;
-      const el = this.element(m);
+      const slot = slots.get(m.id) ?? 0;
+      slots.set(m.id, slot + 1);
+      const el = this.element(m, slot);
       const box = h("div", { class: "layer" });
       const tr = c.transform;
       const sc = tr.scale || 1;
@@ -366,6 +371,7 @@ class Editor {
         width: `${bw}px`,
         height: `${bh}px`,
         borderRadius: track.kind === "video" && p.settings.radius && pad ? `${p.settings.radius * scale}px` : track.kind === "overlay" && m.kind === "video" ? "50%" : "0",
+        boxShadow: track.kind === "video" && p.settings.shadow && pad ? `0 ${Math.max(2, this.stage.clientHeight / 90)}px ${Math.max(6, pad)}px rgba(0,0,0,0.55)` : "none",
         overflow: "hidden",
         transform: `${tr.flipH ? "scaleX(-1)" : ""} ${tr.flipV ? "scaleY(-1)" : ""} rotate(${tr.rotate || 0}deg)`,
         opacity: String(this.fadeAt(c)),
@@ -384,8 +390,9 @@ class Editor {
       }
       // Overlays sit above the zoom, exactly like the export.
       (track.kind === "overlay" ? overlays : this.canvas).appendChild(box);
+      }
     }
-    if (!visual.some((t) => M.clipAt(t, this.t))) this.canvas.appendChild(h("div", { class: "layer", style: { inset: "0" } }, h("span", { class: "muted small" }, this.p.tracks.every((t) => !t.clips.length) ? "Add a video to begin" : "")));
+    if (!anyVisible) this.canvas.appendChild(h("div", { class: "layer", style: { inset: "0" } }, h("span", { class: "muted small" }, this.p.tracks.every((t) => !t.clips.length) ? "Add a video to begin" : "")));
 
     // Audio-only clips.
     for (const track of p.tracks.filter((t) => t.kind === "audio")) {
@@ -407,7 +414,7 @@ class Editor {
       const media = M.mediaOf(p, a.clip);
       const soundFromVideoTrack = a.track.kind === "video" || a.track.kind === "audio";
       a.el.muted = a.track.muted || !soundFromVideoTrack || (media?.kind === "video" && a.track.kind !== "video");
-      a.el.volume = Math.min(1, Math.max(0, a.clip.volume * a.track.volume * this.fadeAt(a.clip)));
+      a.el.volume = Math.min(1, Math.max(0, a.clip.volume * a.track.volume * this.fadeAt(a.clip) * M.volumeAt(a.clip.volumeKeys, this.t - a.clip.start)));
       if (this.playing && a.el.paused && !a.clip.freeze) a.el.play().catch(() => {});
       if ((!this.playing || a.clip.freeze) && !a.el.paused) a.el.pause();
     }
@@ -427,7 +434,7 @@ class Editor {
           el.addEventListener("dblclick", () => { this.openSection = "Text"; this.renderInspector(); (this.inspector.querySelector("textarea") as HTMLTextAreaElement | null)?.focus(); });
           this.overlayLayer.appendChild(el);
         }
-        if (c.shape) this.overlayLayer.appendChild(this.shapeEl(c, selected));
+        if (c.shape) this.overlayLayer.appendChild(c.shape.shape === "arrow" ? this.arrowEl(c, selected) : this.shapeEl(c, selected));
       }
     }
     for (const cap of p.captions) {
@@ -455,6 +462,76 @@ class Editor {
 
   fadeText(c: Clip): number {
     return Math.max(0, Math.min(1, (this.t - c.start) / 0.3, (M.clipEnd(c) - this.t) / 0.3));
+  }
+
+  arrowEl(c: Clip, selected: boolean): HTMLElement {
+    const ns = "http://www.w3.org/2000/svg";
+    const W = this.stage.clientWidth;
+    const H = this.stage.clientHeight;
+    const [x, y, dx, dy] = c.shape!.rect;
+    const color = c.shape!.color || "#ff3b30";
+    const wrap = h("div", { class: `arrow-shape${selected ? " selected" : ""}`, style: { position: "absolute", inset: "0", pointerEvents: "none" } });
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("width", String(W));
+    svg.setAttribute("height", String(H));
+    svg.style.position = "absolute";
+    svg.style.inset = "0";
+    svg.style.overflow = "visible";
+    const th = Math.max(3, H * 0.009);
+    const x1 = x * W, y1 = y * H, x2 = (x + dx) * W, y2 = (y + dy) * H;
+    const len = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+    const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+    const hl = Math.min(th * 5, len * 0.6), hw = th * 3.2;
+    const bx = x2 - ux * hl, by = y2 - uy * hl;
+    const line = document.createElementNS(ns, "line");
+    Object.entries({ x1, y1, x2: bx, y2: by, stroke: color, "stroke-width": th, "stroke-linecap": "round" }).forEach(([k, v]) => line.setAttribute(k, String(v)));
+    const head = document.createElementNS(ns, "polygon");
+    head.setAttribute("points", `${x2},${y2} ${bx - uy * hw},${by + ux * hw} ${bx + uy * hw},${by - ux * hw}`);
+    head.setAttribute("fill", color);
+    const hit = document.createElementNS(ns, "line");
+    Object.entries({ x1, y1, x2, y2, stroke: "transparent", "stroke-width": Math.max(16, th * 4) }).forEach(([k, v]) => hit.setAttribute(k, String(v)));
+    hit.style.pointerEvents = "stroke";
+    hit.style.cursor = "move";
+    svg.append(line, head, hit);
+    wrap.appendChild(svg);
+    const handle = (hx: number, hy: number) => h("span", { class: "arrow-handle", style: { left: `${hx - 6}px`, top: `${hy - 6}px`, display: selected ? "block" : "none" } });
+    const hStart = handle(x1, y1);
+    const hEnd = handle(x2, y2);
+    wrap.append(hStart, hEnd);
+    const drag = (e: MouseEvent, mode: "move" | "start" | "end") => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.selectQuiet({ kind: "clip", id: c.id });
+      const r = this.stage.getBoundingClientRect();
+      const s0 = { x: e.clientX, y: e.clientY };
+      const o = [...c.shape!.rect] as [number, number, number, number];
+      const before = this.p;
+      let next = before;
+      const mv = (ev: MouseEvent) => {
+        const mx = (ev.clientX - s0.x) / r.width;
+        const my = (ev.clientY - s0.y) / r.height;
+        next = M.update(before, c.id, (cl) => {
+          if (mode === "move") cl.shape!.rect = [o[0] + mx, o[1] + my, o[2], o[3]];
+          else if (mode === "start") cl.shape!.rect = [o[0] + mx, o[1] + my, o[2] - mx, o[3] - my];
+          else cl.shape!.rect = [o[0], o[1], o[2] + mx, o[3] + my];
+        });
+        this.p = next;
+        this.renderStage();
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", mv);
+        document.removeEventListener("mouseup", up);
+        this.p = before;
+        if (next !== before) this.commit(next);
+        else this.renderAll();
+      };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    };
+    hit.addEventListener("mousedown", (e) => drag(e as MouseEvent, "move"));
+    hStart.addEventListener("mousedown", (e) => drag(e, "start"));
+    hEnd.addEventListener("mousedown", (e) => drag(e, "end"));
+    return wrap;
   }
 
   shapeEl(c: Clip, selected: boolean): HTMLElement {
@@ -890,9 +967,9 @@ class Editor {
     if (c.shape) {
       return [
         { title: "Shape", summary: c.shape.shape, build: () => [
-          chipGroup("Kind", [["rect", "Box"], ["highlight", "Highlight"], ["blur", "Blur"], ["pixelate", "Pixelate"]], c.shape!.shape as "rect", (v) => commitFrom((cl) => (cl.shape!.shape = v))),
+          chipGroup("Kind", [["rect", "Box"], ["highlight", "Highlight"], ["arrow", "Arrow"], ["blur", "Blur"], ["pixelate", "Pixelate"]], c.shape!.shape as "rect", (v) => commitFrom((cl) => { if ((v === "arrow") !== (cl.shape!.shape === "arrow")) cl.shape!.rect = v === "arrow" ? [0.3, 0.3, 0.2, 0.15] : [0.35, 0.35, 0.3, 0.2]; cl.shape!.shape = v; })),
           chipGroup("Colour", [["#5b8cff", "Blue"], ["#f05252", "Red"], ["#ffd84d", "Yellow"], ["#ffffff", "White"]], (c.shape!.color || "#5b8cff") as "#5b8cff", (v) => commitFrom((cl) => (cl.shape!.color = v))),
-          h("p", { class: "tiny muted" }, "Drag the box in the preview to move it; drag its corner to resize."),
+          h("p", { class: "tiny muted" }, c.shape!.shape === "arrow" ? "Drag the arrow to move it; drag either end to point it." : "Drag the box in the preview to move it; drag its corner to resize."),
         ] },
         this.timingSection(c),
       ];
@@ -919,6 +996,7 @@ class Editor {
       out.push({ title: "Sound", summary: `${Math.round(c.volume * 100)}%`, build: () => [
         slider("Volume", c.volume, 0, 2, 0.01, (v) => `${Math.round(v * 100)}%`, (cl, v) => (cl.volume = v)),
         toggleRow("Clean up voice", "Removes hum and background noise.", c.cleanVoice, (v) => commitFrom((cl) => (cl.cleanVoice = v))),
+        this.volumePoints(c),
         h("button", { type: "button", class: "btn", onclick: () => this.findSilence(m) }, "Find silent parts"),
       ] });
     }
@@ -930,12 +1008,43 @@ class Editor {
         slider("Zoom in (crop)", c.transform.crop ? 1 / c.transform.crop[2] : 1, 1, 3, 0.05, (v) => `${v.toFixed(2)}×`, (cl, v) => { const s = 1 / v; cl.transform.crop = v <= 1.001 ? null : [(1 - s) / 2, (1 - s) / 2, s, s]; }),
       ] });
     }
+    if ((track.kind === "video" || track.kind === "overlay" || track.kind === "audio") && M.previousTouching(p, id)) {
+      const tr = c.transitionIn;
+      out.splice(Math.min(1, out.length), 0, { title: "Transition in", summary: tr ? (tr.kind === "dip" ? "Dip" : "Crossfade") : "None", build: () => [
+        chipGroup("From the clip before", [["none", "None"], ["crossfade", "Crossfade"], ["dip", "Dip to background"]], (tr?.kind || "none") as "none", (v) => commitFrom((cl) => { cl.transitionIn = v === "none" ? null : { kind: v as "crossfade" | "dip", duration: cl.transitionIn?.duration || 0.6 }; })),
+        tr ? slider("Length", tr.duration, 0.1, 3, 0.05, (v) => `${v.toFixed(2)} s`, (cl, v) => { cl.transitionIn = { kind: cl.transitionIn?.kind || "crossfade", duration: v }; }) : null,
+        tr?.kind === "crossfade" && c.in / Math.max(c.speed, 0.01) < tr.duration ? h("p", { class: "tiny muted" }, "This clip starts at the very beginning of its video, so the crossfade is shortened to the footage available.") : null,
+      ] });
+    }
     out.push({ title: "Fade in and out", summary: c.fadeIn || c.fadeOut ? "On" : "Off", build: () => [
       slider("Fade in", c.fadeIn, 0, 5, 0.1, (v) => `${v.toFixed(1)} s`, (cl, v) => (cl.fadeIn = v)),
       slider("Fade out", c.fadeOut, 0, 5, 0.1, (v) => `${v.toFixed(1)} s`, (cl, v) => (cl.fadeOut = v)),
     ] });
     out.push(this.timingSection(c));
     return out;
+  }
+
+  /** Volume points: change loudness over time within one clip. */
+  volumePoints(c: Clip): HTMLElement {
+    const box = h("div", { class: "col", style: { gap: "8px" } });
+    const keys = [...(c.volumeKeys || [])].sort((a, b) => a.t - b.t);
+    const local = Math.max(0, Math.min(M.clipLength(c), this.t - c.start));
+    box.appendChild(h("div", { class: "row", style: { justifyContent: "space-between" } },
+      h("span", { class: "small" }, "Volume points"),
+      h("button", { type: "button", class: "btn", style: { height: "30px" }, onclick: () => this.commit(M.update(this.p, c.id, (cl) => {
+        const list = (cl.volumeKeys || []).filter((k) => Math.abs(k.t - local) > 0.05);
+        list.push({ t: local, v: M.volumeAt(cl.volumeKeys, local) });
+        if (list.length === 1 && local > 0.05) list.unshift({ t: 0, v: 1 });
+        cl.volumeKeys = list.sort((a, b) => a.t - b.t);
+      })) }, icon("plus", 13), `Add at ${clock(local)}`)));
+    keys.forEach((k, i) => {
+      box.appendChild(h("div", { class: "row small", style: { gap: "8px" } },
+        h("button", { type: "button", class: "btn ghost mono", style: { height: "28px", padding: "0 6px" }, onclick: () => this.seek(c.start + k.t) }, clock(k.t)),
+        h("div", { class: "grow" }, rangeControl("Level", k.v, 0, 2, 0.01, (v) => `${Math.round(v * 100)}%`, () => {}, (v) => this.commit(M.update(this.p, c.id, (cl) => { const s = [...(cl.volumeKeys || [])].sort((a, b) => a.t - b.t); s[i] = { ...s[i], v }; cl.volumeKeys = s; })))),
+        h("button", { type: "button", class: "icon-btn", "aria-label": `Remove volume point at ${clock(k.t)}`, onclick: () => this.commit(M.update(this.p, c.id, (cl) => { const s = [...(cl.volumeKeys || [])].sort((a, b) => a.t - b.t); s.splice(i, 1); cl.volumeKeys = s; })) }, icon("close", 12))));
+    });
+    if (!keys.length) box.appendChild(h("p", { class: "tiny muted" }, "Add points to make the sound rise or fall, for example to lower music under your voice."));
+    return box;
   }
 
   timingSection(c: Clip) {
@@ -996,6 +1105,7 @@ class Editor {
         h("label", { class: "ctl" }, h("span", null, "Background"), h("input", { type: "color", value: s.background || "#000000", "aria-label": "Background colour", style: { width: "100%", height: "36px", border: "0", background: "none" }, onchange: (e: Event) => set({ background: (e.target as HTMLInputElement).value }) })),
         rangeControl("Padding", s.padding, 0, 200, 2, (v) => `${v} px`, (v) => set({ padding: v }, true), (v) => set({ padding: v })),
         rangeControl("Rounded corners", s.radius, 0, 80, 1, (v) => `${v} px`, (v) => set({ radius: v }, true), (v) => set({ radius: v })),
+        toggleRow("Shadow", "A soft shadow under the picture. Needs some padding.", !!s.shadow, (v) => set({ shadow: v, padding: v && !s.padding ? 48 : s.padding })),
         h("p", { class: "tiny muted" }, "Padding and rounded corners give recordings a clean app-demo look."),
       ] },
       { title: "Zoom", summary: p.zooms.length ? `${p.zooms.length}` : "Off", build: () => this.zoomControls() },
@@ -1089,7 +1199,7 @@ class Editor {
     (this.inspector.querySelector("textarea") as HTMLTextAreaElement | null)?.select();
   }
 
-  addShape(kind: "rect" | "highlight" | "blur" | "pixelate") {
+  addShape(kind: "rect" | "highlight" | "blur" | "pixelate" | "arrow") {
     const r = M.addShape(this.p, this.t, kind);
     this.commit(r.project);
     this.select({ kind: "clip", id: r.id });
@@ -1097,12 +1207,13 @@ class Editor {
 
   shapesMenu() {
     modal((close) => {
-      const opt = (k: "rect" | "highlight" | "blur" | "pixelate", title: string, sub: string, ic: Parameters<typeof icon>[0]) =>
+      const opt = (k: "rect" | "highlight" | "blur" | "pixelate" | "arrow", title: string, sub: string, ic: Parameters<typeof icon>[0]) =>
         h("button", { type: "button", class: "opt", style: { flexDirection: "row", alignItems: "center", gap: "14px" }, onclick: () => { close(); this.addShape(k); } }, h("span", { style: { color: "var(--accent)" } }, icon(ic, 20)), h("span", { class: "col", style: { gap: "2px" } }, h("strong", null, title), h("small", null, sub)));
       return h("div", { class: "dialog", style: { width: "480px" } },
         h("header", null, h("h2", null, "Add a shape"), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close", 16))),
         h("div", { class: "content" },
           opt("highlight", "Highlight", "Draw attention to a button or area", "box"),
+          opt("arrow", "Arrow", "Point at something", "forward"),
           opt("rect", "Box", "An outline around something", "box"),
           opt("blur", "Blur", "Hide passwords, emails or faces", "blur"),
           opt("pixelate", "Pixelate", "A stronger way to hide something", "blur")));
