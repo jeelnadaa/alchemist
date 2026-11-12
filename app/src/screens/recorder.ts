@@ -2,7 +2,7 @@
 // Advanced settings (custom size and frame rate, auto-stop, keystrokes) sit
 // behind "More options".
 
-import { call, inTauri, on, type Clamped, type Manifest, type Monitor, type RecordOptions, type RecordStatus, type Source } from "../api";
+import { call, inTauri, on, type Clamped, type Manifest, type Monitor, type RecordOptions, type RecordStatus, type ReplayStatus, type Source } from "../api";
 import { clear, h, icon } from "../dom";
 import { bytes, clock } from "../format";
 import { go, take } from "../router";
@@ -91,6 +91,58 @@ export async function mount(shell: Shell) {
   const qualityBtn = h("button", { type: "button", class: "pill", "data-tooltip": "Change recording quality preset", "data-tooltip-pos": "top", style: { flexDirection: "column", alignItems: "flex-start", gap: "0", lineHeight: "1.15" }, onclick: () => openMore() },
     h("span", { class: "tiny muted" }, "Quality"), h("span", { style: { color: "var(--text)" } }, PRESET_LABEL[opts.preset]));
 
+  let replayActive = false;
+  let replayBuffered = 0;
+  const replaySlot = h("span", { class: "row", style: { gap: "6px" } });
+
+  const renderReplay = () => {
+    clear(replaySlot);
+    if (!replayActive) {
+      replaySlot.appendChild(
+        h("button", {
+          type: "button",
+          class: "pill",
+          "data-tooltip": `Start instant replay background buffer (${store.settings.replaySeconds || 30}s)`,
+          "data-tooltip-pos": "top",
+          onclick: () => toggleReplay()
+        }, icon("sparkle", 16), "Replay Buffer")
+      );
+    } else {
+      replaySlot.appendChild(
+        h("button", {
+          type: "button",
+          class: "btn primary",
+          style: { height: "42px", padding: "0 14px" },
+          "data-tooltip": "Save last moments to Replays folder (Ctrl Shift S)",
+          "data-tooltip-pos": "top",
+          onclick: () => saveReplay()
+        }, icon("check", 15), `Save Replay (${Math.round(replayBuffered)}s)`)
+      );
+      replaySlot.appendChild(
+        h("button", {
+          type: "button",
+          class: "icon-btn",
+          "data-tooltip": "Stop replay buffer",
+          "data-tooltip-pos": "top",
+          onclick: () => toggleReplay()
+        }, icon("close", 16))
+      );
+    }
+  };
+
+  const checkReplayStatus = async () => {
+    const st = await call<ReplayStatus>("replay_status").catch(() => null);
+    if (st) {
+      replayActive = st.running;
+      replayBuffered = st.buffered;
+      renderReplay();
+    }
+  };
+  checkReplayStatus();
+  const unReplay = await on("replay", checkReplayStatus);
+  const unReplaySaved = await on("replay-saved", checkReplayStatus);
+  const replayTimer = setInterval(checkReplayStatus, 2000);
+
   const sources: [Kind, string][] = info.os === "windows" ? [["screen", "Screen"], ["window", "Window"], ["area", "Area"]] : [["screen", "Screen"], ["area", "Area"]];
   const toolbar = h("div", { class: "rectool", role: "toolbar", "aria-label": "Recording setup" },
     segmented("What to record", sources, kind, (v) => { kind = v; renderSource(); }),
@@ -101,6 +153,7 @@ export async function mount(shell: Shell) {
     h("span", { class: "sep" }),
     qualityBtn,
     h("button", { type: "button", class: "recbtn", "data-tooltip": "Start recording (Ctrl Shift R)", "data-tooltip-pos": "top", onclick: () => start() }, "Record"),
+    replaySlot,
     h("button", { type: "button", class: "icon-btn", "aria-label": "More recording options", "data-tooltip": "Recording options", "data-tooltip-pos": "top", onclick: () => openMore() }, icon("more", 18)));
 
   const page = h("div", { class: "recorder" },
@@ -109,7 +162,7 @@ export async function mount(shell: Shell) {
     errorBox,
     toolbar,
     estimate,
-    h("p", { class: "muted small" }, "Press ", h("span", { class: "kbd" }, "Ctrl Shift R"), " anywhere to start or stop, even with this window closed."));
+    h("p", { class: "muted small" }, "Record starts a full clip (", h("span", { class: "kbd" }, "Ctrl Shift R"), "). Replay buffers continuously in the background and saves the last moments on hotkey (", h("span", { class: "kbd" }, "Ctrl Shift S"), ")."));
   shell.main.appendChild(page);
   await renderSource();
 
@@ -184,8 +237,54 @@ export async function mount(shell: Shell) {
     }, { label: "Recording options" });
   }
 
+  async function toggleReplay() {
+    if (replayActive) {
+      await call("replay_stop").catch((e) => toast(errorText(e), { error: true }));
+      replayActive = false;
+      renderReplay();
+      toast("Instant replay buffer stopped.");
+    } else {
+      const source = buildSource();
+      if (!source) {
+        toast("Select a screen or area first.", { error: true });
+        return;
+      }
+      try {
+        const st = await call<ReplayStatus>("replay_start", {
+          opts: {
+            source,
+            seconds: store.settings.replaySeconds || 30,
+            mic: opts.mic,
+            systemAudio: opts.systemAudio,
+            preset: opts.preset,
+          }
+        });
+        replayActive = true;
+        replayBuffered = st.buffered;
+        renderReplay();
+        toast(`Instant replay buffering last ${st.seconds}s in the background.`);
+      } catch (e) {
+        toast(errorText(e), { error: true });
+      }
+    }
+  }
+
+  async function saveReplay() {
+    try {
+      const p = await call<string>("replay_save");
+      toast(`Instant replay saved: ${p.split(/[\\/]/).pop()}`);
+    } catch (e) {
+      toast(errorText(e), { error: true });
+    }
+  }
+
   if (take("record-now")) start();
-  return () => unArea();
+  return () => {
+    unArea();
+    unReplay();
+    unReplaySaved();
+    clearInterval(replayTimer);
+  };
 }
 
 function countdown(n: number): Promise<void> {

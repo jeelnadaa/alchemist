@@ -11,6 +11,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "search", label: "Search", scope: "global" },
   { id: "home", label: "Go home", scope: "global" },
   { id: "record", label: "Record screen", scope: "global" },
+  { id: "replaySave", label: "Save instant replay", scope: "global" },
   { id: "newEdit", label: "New edit", scope: "global" },
   { id: "convert", label: "Convert or shrink", scope: "global" },
   { id: "settings", label: "Settings", scope: "global" },
@@ -31,22 +32,22 @@ export const SHORTCUTS: ShortcutDef[] = [
 
 export const PRESETS: Record<string, Record<string, string>> = {
   alchemist: {
-    search: "Mod+K", home: "Mod+1", record: "Mod+Shift+R", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
+    search: "Mod+K", home: "Mod+1", record: "Mod+Shift+R", replaySave: "Mod+Shift+S", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
     playPause: "Space", split: "S", delete: "Delete", rippleDelete: "Shift+Delete", duplicate: "Mod+D", undo: "Mod+Z", redo: "Mod+Shift+Z",
     markIn: "I", markOut: "O", addMarker: "M", export: "Mod+E", frameBack: "ArrowLeft", frameForward: "ArrowRight",
   },
   premiere: {
-    search: "Mod+Shift+F", home: "Mod+1", record: "Mod+Shift+R", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
+    search: "Mod+Shift+F", home: "Mod+1", record: "Mod+Shift+R", replaySave: "Mod+Shift+S", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
     playPause: "Space", split: "Mod+K", delete: "Delete", rippleDelete: "Shift+Delete", duplicate: "Mod+D", undo: "Mod+Z", redo: "Mod+Shift+Z",
     markIn: "I", markOut: "O", addMarker: "M", export: "Mod+M", frameBack: "ArrowLeft", frameForward: "ArrowRight",
   },
   finalcut: {
-    search: "Mod+F", home: "Mod+1", record: "Mod+Shift+R", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
+    search: "Mod+F", home: "Mod+1", record: "Mod+Shift+R", replaySave: "Mod+Shift+S", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
     playPause: "Space", split: "Mod+B", delete: "Delete", rippleDelete: "Shift+Delete", duplicate: "Mod+D", undo: "Mod+Z", redo: "Mod+Shift+Z",
     markIn: "I", markOut: "O", addMarker: "M", export: "Mod+E", frameBack: "ArrowLeft", frameForward: "ArrowRight",
   },
   davinci: {
-    search: "Mod+K", home: "Mod+1", record: "Mod+Shift+R", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
+    search: "Mod+K", home: "Mod+1", record: "Mod+Shift+R", replaySave: "Mod+Shift+S", newEdit: "Mod+N", convert: "Mod+Shift+C", settings: "Mod+,",
     playPause: "Space", split: "Mod+B", delete: "Backspace", rippleDelete: "Delete", duplicate: "Mod+D", undo: "Mod+Z", redo: "Mod+Shift+Z",
     markIn: "I", markOut: "O", addMarker: "M", export: "Mod+Shift+E", frameBack: "ArrowLeft", frameForward: "ArrowRight",
   },

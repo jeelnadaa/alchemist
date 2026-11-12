@@ -33,8 +33,23 @@ export function buildShell(): Shell {
   const search = h("button", { type: "button", class: "searchbar", onclick: () => openPalette(), "aria-label": "Search actions, files and settings", "data-tooltip": "Search actions, files and settings", "data-tooltip-pos": "bottom" },
     icon("search", 16), h("span", { class: "grow" }, "Search actions, files and settings"), h("span", { class: "kbd" }, navigator.platform.includes("Mac") ? "⌘ K" : "Ctrl K"));
   const jobChip = h("button", { type: "button", class: "jobchip hidden", onclick: () => openJobs(), "data-tooltip": "Active background jobs", "data-tooltip-pos": "bottom" });
+  const replayChip = h("button", {
+    type: "button",
+    class: "jobchip hidden",
+    style: { borderColor: "color-mix(in srgb, var(--accent) 50%, transparent)" },
+    "data-tooltip": "Instant replay active. Click to save (Ctrl Shift S)",
+    "data-tooltip-pos": "bottom",
+    onclick: async () => {
+      try {
+        const p = await call<string>("replay_save");
+        import("./ui/common").then(({ toast }) => toast(`Instant replay saved: ${fileName(p)}`));
+      } catch (e: any) {
+        import("./ui/common").then(({ toast, errorText }) => toast(errorText(e), { error: true }));
+      }
+    }
+  });
   const rightSlot = h("div", { class: "row" });
-  const right = h("div", { class: "title-right" }, jobChip, rightSlot);
+  const right = h("div", { class: "title-right" }, replayChip, jobChip, rightSlot);
   const titlebar = h("header", { class: "titlebar" }, left, search, right);
 
   const links = new Map<string, HTMLAnchorElement>();
@@ -76,6 +91,26 @@ export function buildShell(): Shell {
   };
   store.sub("jobs", renderJobs);
   renderJobs();
+
+  const updateReplayChip = async () => {
+    const st = await call<{ running: boolean; buffered: number }>("replay_status").catch(() => null);
+    if (st?.running) {
+      replayChip.classList.remove("hidden");
+      clear(replayChip);
+      replayChip.append(
+        h("span", { class: "dot", style: { background: "var(--ok)", boxShadow: "0 0 8px var(--ok)" } }),
+        `Replay ${Math.round(st.buffered)}s · Save`
+      );
+    } else {
+      replayChip.classList.add("hidden");
+    }
+  };
+  import("./api").then(({ on }) => {
+    on("replay", updateReplayChip);
+    on("replay-saved", updateReplayChip);
+  });
+  setInterval(updateReplayChip, 2000);
+  updateReplayChip();
 
   // Finished-job notifications.
   const seen = new Set<string>();

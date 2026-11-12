@@ -90,6 +90,11 @@ async function boot() {
     else if (act === "newEdit") { request("new-edit"); go("edit/new"); }
     else if (act === "convert") go("convert");
     else if (act === "settings") go("settings/appearance");
+    else if (act === "replaySave") {
+      call<string>("replay_save")
+        .then((p) => toast(`Instant replay saved: ${p.split(/[\\/]/).pop()}`))
+        .catch((err) => toast(errorText(err), { error: true }));
+    }
   });
 
   // Global hotkey from anywhere in the OS.
@@ -98,6 +103,10 @@ async function boot() {
       request("record-now");
       go("record");
     }
+  });
+
+  await on<string>("replay-saved", (path) => {
+    toast(`Instant replay saved: ${path.split(/[\\/]/).pop()}`);
   });
   // A recording just finished (from the bar, the hotkey or auto-stop): open it.
   const openFinished = async () => {
