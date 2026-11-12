@@ -1,0 +1,938 @@
+//! Export: turns a project into one FFmpeg filter graph.
+//!
+//! The same project data drives the live preview in the editor, and every
+//! effect here mirrors the preview's maths (zoom ramps, fades, positions), so
+//! what you see is what you export.
+
+use crate::convert::{self, Quality};
+use crate::ffmpeg::Capabilities;
+use crate::limits::{self, FitMode};
+use crate::project::{Clip, Project, Track};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Preset {
+    Share,
+    Vertical,
+    Small,
+    Gif,
+    Audio,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub preset: Preset,
+    pub output: PathBuf,
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default)]
+    pub fps: Option<f64>,
+    #[serde(default)]
+    pub burn_captions: bool,
+    #[serde(default)]
+    pub sidecar_captions: bool,
+    #[serde(default)]
+    pub loudness: bool,
+    #[serde(default = "yes")]
+    pub use_hardware: bool,
+    #[serde(default)]
+    pub target_mb: Option<f64>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+pub struct ExportPlan {
+    pub args: Vec<String>,
+    pub duration: f64,
+    pub temp_files: Vec<PathBuf>,
+}
+
+fn f(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s == "-0" {
+        "0".into()
+    } else {
+        s
+    }
+}
+
+/// Escape a path for use inside a filter argument (fontfile=…, textfile=…).
+pub fn filter_path(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    s.replace(':', "\\:").replace('\'', "\\'")
+}
+
+fn hex_color(c: &str, fallback: &str) -> String {
+    let c = c.trim();
+    if c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+        format!("0x{}", &c[1..])
+    } else {
+        fallback.to_string()
+    }
+}
+
+/// atempo only accepts 0.5–2.0, so chain it for other speeds.
+pub fn atempo_chain(speed: f64) -> Vec<String> {
+    let mut s = speed.clamp(0.0625, 16.0);
+    let mut out = Vec::new();
+    while s > 2.0 {
+        out.push("atempo=2".to_string());
+        s /= 2.0;
+    }
+    while s < 0.5 {
+        out.push("atempo=0.5".to_string());
+        s /= 0.5;
+    }
+    if (s - 1.0).abs() > 1e-6 {
+        out.push(format!("atempo={}", f(s)));
+    }
+    out
+}
+
+/// Zoom level over time as an FFmpeg expression of `var` (seconds).
+/// Each zoom ramps in and out over `ramp` seconds; mirrors `zoomAt()` in the UI.
+pub fn zoom_expr(zooms: &[crate::project::Zoom], ramp: f64, var: &str) -> String {
+    if zooms.is_empty() {
+        return "1".into();
+    }
+    let r = ramp.max(0.05);
+    let terms: Vec<String> = zooms
+        .iter()
+        .map(|z| {
+            format!(
+                "{}*clip(({var}-{})/{},0,1)*clip(({}-{var})/{},0,1)",
+                f(z.scale - 1.0),
+                f(z.start),
+                f(r),
+                f(z.end),
+                f(r)
+            )
+        })
+        .collect();
+    format!("1+{}", terms.join("+"))
+}
+
+/// Focus point (fraction) over time; 0.5 when no zoom is active.
+pub fn focus_expr(zooms: &[crate::project::Zoom], ramp: f64, axis_x: bool, var: &str) -> String {
+    let mut e = "0.5".to_string();
+    for z in zooms.iter().rev() {
+        let v = if axis_x { z.x } else { z.y };
+        e = format!(
+            "if(between({var},{},{}),{},{e})",
+            f(z.start - ramp),
+            f(z.end + ramp),
+            f(v.clamp(0.0, 1.0))
+        );
+    }
+    e
+}
+
+struct Inputs {
+    args: Vec<String>,
+    index: HashMap<String, usize>,
+}
+
+fn collect_inputs(p: &Project, total: f64) -> Inputs {
+    let mut args = Vec::new();
+    let mut index = HashMap::new();
+    for t in &p.tracks {
+        for c in &t.clips {
+            let Some(mid) = &c.media_id else { continue };
+            if index.contains_key(mid) {
+                continue;
+            }
+            let Some(m) = p.media(mid) else { continue };
+            if m.kind == "image" {
+                args.extend(["-loop".into(), "1".into(), "-t".into(), f(total.max(0.1))]);
+            }
+            args.extend(["-i".into(), m.path.to_string_lossy().to_string()]);
+            index.insert(mid.clone(), index.len());
+        }
+    }
+    Inputs { args, index }
+}
+
+fn video_chain(c: &Clip, input: usize, box_w: u32, box_h: u32, fps: f64) -> String {
+    let mut ch = format!("[{input}:v]");
+    let mut parts: Vec<String> = Vec::new();
+    if c.freeze {
+        parts.push(format!("trim=start={}", f(c.in_point)));
+        parts.push("setpts=PTS-STARTPTS".into());
+        parts.push("trim=end_frame=1".into());
+        parts.push("loop=loop=-1:size=1:start=0".into());
+        parts.push(format!("fps={}", limits::fps_to_ffmpeg(fps)));
+        parts.push(format!("trim=duration={}", f(c.length())));
+    } else {
+        parts.push(format!("trim=start={}:end={}", f(c.in_point), f(c.out)));
+        parts.push("setpts=PTS-STARTPTS".into());
+        if c.reverse {
+            parts.push("reverse".into());
+        }
+        if (c.speed - 1.0).abs() > 1e-6 {
+            parts.push(format!("setpts=PTS/{}", f(c.speed)));
+        }
+        parts.push(format!("fps={}", limits::fps_to_ffmpeg(fps)));
+    }
+    let t = &c.transform;
+    if let Some([x, y, w, h]) = t.crop {
+        parts.push(format!(
+            "crop=iw*{}:ih*{}:iw*{}:ih*{}",
+            f(w),
+            f(h),
+            f(x),
+            f(y)
+        ));
+    }
+    match t.rotate.rem_euclid(360) {
+        90 => parts.push("transpose=1".into()),
+        180 => parts.push("transpose=1,transpose=1".into()),
+        270 => parts.push("transpose=2".into()),
+        _ => {}
+    }
+    if t.flip_h {
+        parts.push("hflip".into());
+    }
+    if t.flip_v {
+        parts.push("vflip".into());
+    }
+    let sc = if t.scale > 0.0 { t.scale } else { 1.0 };
+    let (bw, bh) = (
+        ((box_w as f64 * sc) as u32 / 2 * 2).max(2),
+        ((box_h as f64 * sc) as u32 / 2 * 2).max(2),
+    );
+    parts.push(format!(
+        "scale={bw}:{bh}:force_original_aspect_ratio=decrease:flags=lanczos"
+    ));
+    parts.push("format=yuva420p".into());
+    if c.fade_in > 0.0 {
+        parts.push(format!("fade=t=in:st=0:d={}:alpha=1", f(c.fade_in)));
+    }
+    if c.fade_out > 0.0 {
+        parts.push(format!(
+            "fade=t=out:st={}:d={}:alpha=1",
+            f((c.length() - c.fade_out).max(0.0)),
+            f(c.fade_out)
+        ));
+    }
+    parts.push(format!("setpts=PTS+{}/TB", f(c.start)));
+    ch.push_str(&parts.join(","));
+    ch
+}
+
+fn text_y(position: &str) -> &'static str {
+    match position {
+        "top" => "h*0.08",
+        "middle" => "(h-text_h)/2",
+        _ => "h-text_h-h*0.08",
+    }
+}
+
+/// Build the full export. `font` is a TTF bundled with the app; `tmp` is a
+/// scratch folder for text files (avoids all drawtext escaping problems).
+pub fn build(
+    p: &Project,
+    req: &ExportRequest,
+    caps: &Capabilities,
+    font: &Path,
+    tmp: &Path,
+) -> Result<ExportPlan, String> {
+    let total = p.duration();
+    if total <= 0.0 {
+        return Err("The timeline is empty. Add a video first.".into());
+    }
+    let (range_start, range_end) = req
+        .range
+        .unwrap_or((p.in_point.unwrap_or(0.0), p.out_point.unwrap_or(total)));
+    let range_end = range_end.min(total);
+    if range_end - range_start < 0.05 {
+        return Err("The export range is empty.".into());
+    }
+    let duration = range_end - range_start;
+
+    // Output frame.
+    let (mut w, mut h) = (p.settings.width, p.settings.height);
+    let mut fps = p.settings.fps;
+    let mut fit = FitMode::Fit;
+    match req.preset {
+        Preset::Vertical => {
+            w = 1080;
+            h = 1920;
+            fit = FitMode::Fill;
+        }
+        Preset::Gif => {
+            let s = 720.0 / w.max(h) as f64;
+            if s < 1.0 {
+                w = ((w as f64 * s) as u32 / 2 * 2).max(2);
+                h = ((h as f64 * s) as u32 / 2 * 2).max(2);
+            }
+            fps = fps.min(15.0);
+        }
+        _ => {}
+    }
+    if let (Some(rw), Some(rh)) = (req.width, req.height) {
+        w = rw;
+        h = rh;
+    }
+    if let Some(rf) = req.fps {
+        fps = rf;
+    }
+    let c = limits::clamp_video(limits::VideoSettings {
+        width: w,
+        height: h,
+        fps,
+    })
+    .value;
+    let (w, h, fps) = (c.width, c.height, c.fps);
+
+    let inputs = collect_inputs(p, total);
+    let mut g = String::new();
+    let mut temp_files = Vec::new();
+    let pad = p.settings.padding.min(w.min(h) / 3);
+    let (box_w, box_h) = (w - 2 * pad, h - 2 * pad);
+    let bg = hex_color(&p.settings.background, "black");
+
+    // 1. Canvas.
+    let _ = write!(
+        g,
+        "color=c={bg}:s={w}x{h}:r={}:d={}[base]",
+        limits::fps_to_ffmpeg(fps),
+        f(total)
+    );
+    let mut last = "base".to_string();
+    let mut k = 0;
+
+    // 2. Video tracks, bottom to top. Overlay tracks (camera, images) are
+    //    added after the zoom so they stay put while the screen zooms.
+    let place = |g: &mut String, last: &mut String, k: &mut usize, kinds: &[&str]| {
+        let visual: Vec<&Track> = p
+            .tracks
+            .iter()
+            .filter(|t| kinds.contains(&t.kind.as_str()))
+            .collect();
+        for t in &visual {
+            for c in &t.clips {
+                let Some(mid) = &c.media_id else { continue };
+                let Some(&idx) = inputs.index.get(mid) else {
+                    continue;
+                };
+                let m = p.media(mid).unwrap();
+                if m.kind == "audio" {
+                    continue;
+                }
+                let (bw, bh) = if t.kind == "video" && fit == FitMode::Fill {
+                    (w, h)
+                } else {
+                    (box_w, box_h)
+                };
+                let mut chain = video_chain(c, idx, bw, bh, fps);
+                if t.kind == "video" && fit == FitMode::Fill {
+                    chain = chain.replace(
+                        "force_original_aspect_ratio=decrease",
+                        "force_original_aspect_ratio=increase",
+                    );
+                    chain.push_str(&format!(",crop={w}:{h}"));
+                }
+                let _ = write!(g, ";{chain}[c{k}]");
+                let ox = format!("(W-w)/2+W*{}", f(c.transform.x));
+                let oy = format!("(H-h)/2+H*{}", f(c.transform.y));
+                let _ = write!(g, ";[{last}][c{k}]overlay=x={ox}:y={oy}:eof_action=pass:enable='between(t,{},{})'[v{k}]", f(c.start), f(c.end()));
+                *last = format!("v{k}");
+                *k += 1;
+            }
+        }
+    };
+    place(&mut g, &mut last, &mut k, &["video"]);
+
+    // 3. Rounded corners: a static mask in the background colour, made once and looped.
+    if p.settings.radius > 0 && pad > 0 {
+        // Round the picture itself: fit the main video's shape into the padded box.
+        let main_media = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == "video")
+            .flat_map(|t| t.clips.iter())
+            .find_map(|c| {
+                c.media_id
+                    .as_ref()
+                    .and_then(|id| p.media(id))
+                    .map(|m| (m, c.transform.rotate.rem_euclid(180) == 90))
+            });
+        let (cw, ch) = match main_media {
+            Some((m, rotated)) if m.width > 0 && m.height > 0 => {
+                let (mw, mh) = if rotated {
+                    (m.height as f64, m.width as f64)
+                } else {
+                    (m.width as f64, m.height as f64)
+                };
+                let s = (box_w as f64 / mw).min(box_h as f64 / mh);
+                (
+                    ((mw * s).round() as u32).min(box_w),
+                    ((mh * s).round() as u32).min(box_h),
+                )
+            }
+            _ => (box_w, box_h),
+        };
+        let (box_w, box_h) = (cw, ch);
+        let r = p.settings.radius.min(box_w.min(box_h) / 2);
+        let (bx, by) = ((w - cw) / 2, (h - ch) / 2);
+        let a = format!(
+            "if(lte(pow(max(max({bx}+{r}-X\\,X-({bx}+{box_w}-{r}))\\,0)\\,2)+pow(max(max({by}+{r}-Y\\,Y-({by}+{box_h}-{r}))\\,0)\\,2)\\,{r}*{r})*between(X\\,{bx}\\,{bx}+{box_w})*between(Y\\,{by}\\,{by}+{box_h})\\,0\\,255)"
+        );
+        let _ = write!(
+            g,
+            ";color=c={bg}:s={w}x{h}:r={}:d=0.1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{a}',trim=end_frame=1,loop=loop=-1:size=1:start=0,trim=duration={}[mask];[{last}][mask]overlay=format=auto[rounded]",
+            limits::fps_to_ffmpeg(fps),
+            f(total)
+        );
+        last = "rounded".into();
+    }
+
+    // 4. Zoom (auto-zoom from clicks, or manual).
+    if !p.zooms.is_empty() {
+        let ramp = 0.25 + p.zoom_smoothness.clamp(0.0, 1.0) * 0.75;
+        let z = zoom_expr(&p.zooms, ramp, "it");
+        let fx = focus_expr(&p.zooms, ramp, true, "it");
+        let fy = focus_expr(&p.zooms, ramp, false, "it");
+        let _ = write!(
+            g,
+            ";[{last}]zoompan=z='{z}':x='max(0,min(iw-iw/zoom,iw*{fx}-iw/zoom/2))':y='max(0,min(ih-ih/zoom,ih*{fy}-ih/zoom/2))':d=1:s={w}x{h}:fps={}[zoomed]",
+            limits::fps_to_ffmpeg(fps)
+        );
+        last = "zoomed".into();
+    }
+
+    // 4b. Overlays (camera bubble, images) on top of the zoomed picture.
+    place(&mut g, &mut last, &mut k, &["overlay"]);
+
+    // 5. Shapes: boxes, highlights, blur and pixelate regions.
+    for t in p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == "text" || t.kind == "overlay")
+    {
+        for c in &t.clips {
+            let Some(sh) = &c.shape else { continue };
+            let [x, y, rw, rh] = sh.rect;
+            let (px, py) = ((x * w as f64) as i64, (y * h as f64) as i64);
+            let (pw, ph) = (
+                ((rw * w as f64) as i64).max(4) / 2 * 2,
+                ((rh * h as f64) as i64).max(4) / 2 * 2,
+            );
+            let en = format!("enable='between(t,{},{})'", f(c.start), f(c.end()));
+            let color = hex_color(&sh.color, "0x5b8cff");
+            match sh.shape.as_str() {
+                "blur" | "pixelate" => {
+                    // boxblur's radius must fit in half the (chroma-subsampled) region.
+                    let radius = ((pw.min(ph) / 4) - 1).clamp(1, 20);
+                    let fx = if sh.shape == "blur" {
+                        format!("boxblur={radius}:3")
+                    } else {
+                        format!(
+                            "scale={}:{}:flags=neighbor,scale={pw}:{ph}:flags=neighbor",
+                            (pw / 16).max(2),
+                            (ph / 16).max(2)
+                        )
+                    };
+                    let _ = write!(g, ";[{last}]split[s{k}a][s{k}b];[s{k}b]crop={pw}:{ph}:{px}:{py},{fx}[s{k}c];[s{k}a][s{k}c]overlay={px}:{py}:{en}[sh{k}]");
+                }
+                "highlight" => {
+                    let _ = write!(g, ";[{last}]drawbox=x={px}:y={py}:w={pw}:h={ph}:color={color}@0.22:t=fill:{en},drawbox=x={px}:y={py}:w={pw}:h={ph}:color={color}:t=4:{en}[sh{k}]");
+                }
+                _ => {
+                    let _ = write!(g, ";[{last}]drawbox=x={px}:y={py}:w={pw}:h={ph}:color={color}:t=6:{en}[sh{k}]");
+                }
+            }
+            last = format!("sh{k}");
+            k += 1;
+        }
+    }
+
+    // 6. Text clips and burned-in captions (drawtext with text files).
+    let fontfile = filter_path(font);
+    let mut texts: Vec<(f64, f64, String, u32, String, String, String)> = Vec::new();
+    for t in p.tracks.iter().filter(|t| t.kind == "text") {
+        for c in &t.clips {
+            if let Some(tp) = &c.text {
+                let size = if tp.size > 0 { tp.size } else { 48 };
+                texts.push((
+                    c.start,
+                    c.end(),
+                    tp.text.clone(),
+                    size * h / 1080,
+                    tp.position.clone(),
+                    tp.color.clone(),
+                    tp.animation.clone(),
+                ));
+            }
+        }
+    }
+    if req.burn_captions {
+        for cap in &p.captions {
+            texts.push((
+                cap.start,
+                cap.end,
+                cap.text.clone(),
+                44 * h / 1080,
+                "bottom".into(),
+                "#ffffff".into(),
+                "none".into(),
+            ));
+        }
+    }
+    if !texts.is_empty() {
+        std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+    }
+    for (i, (s, e, text, size, pos, color, anim)) in texts.iter().enumerate() {
+        let file = tmp.join(format!("text-{i}.txt"));
+        std::fs::write(&file, text).map_err(|e| e.to_string())?;
+        temp_files.push(file.clone());
+        let alpha = if anim == "fade" {
+            format!(
+                ":alpha='max(0,min(1,min((t-{})/0.3,({}-t)/0.3)))'",
+                f(*s),
+                f(*e)
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            g,
+            ";[{last}]drawtext=fontfile='{fontfile}':textfile='{}':expansion=none:fontsize={}:fontcolor={}:box=1:boxcolor=0x0a0c10@0.78:boxborderw={}:x=(w-text_w)/2:y={}{alpha}:enable='between(t,{},{})'[tx{i}]",
+            filter_path(&file),
+            (*size).max(8),
+            hex_color(color, "white"),
+            (size / 3).max(6),
+            text_y(pos),
+            f(*s),
+            f(*e)
+        );
+        last = format!("tx{i}");
+    }
+
+    // 7. Range trim of the final picture.
+    let _ = write!(
+        g,
+        ";[{last}]trim=start={}:end={},setpts=PTS-STARTPTS,format=yuv420p[vout]",
+        f(range_start),
+        f(range_end)
+    );
+
+    // 8. Audio: every clip that has sound, delayed to its place and mixed.
+    let video_end = g.len();
+    let mut alabels = Vec::new();
+    for t in p.tracks.iter().filter(|_| req.preset != Preset::Gif) {
+        if t.muted {
+            continue;
+        }
+        for c in &t.clips {
+            let Some(mid) = &c.media_id else { continue };
+            let Some(&idx) = inputs.index.get(mid) else {
+                continue;
+            };
+            let m = p.media(mid).unwrap();
+            if !(m.kind == "audio" || m.has_audio) || c.freeze {
+                continue;
+            }
+            // A video clip's sound is only used from the video track.
+            if m.kind != "audio" && t.kind != "video" {
+                continue;
+            }
+            let mut parts = vec![
+                format!("atrim=start={}:end={}", f(c.in_point), f(c.out)),
+                "asetpts=PTS-STARTPTS".to_string(),
+            ];
+            if c.reverse {
+                parts.push("areverse".into());
+            }
+            parts.extend(atempo_chain(c.speed));
+            parts.push(format!("volume={}", f(c.volume * t.volume)));
+            if c.clean_voice {
+                parts.push("highpass=f=80,afftdn=nr=12:nf=-40".into());
+            }
+            if c.fade_in > 0.0 {
+                parts.push(format!("afade=t=in:st=0:d={}", f(c.fade_in)));
+            }
+            if c.fade_out > 0.0 {
+                parts.push(format!(
+                    "afade=t=out:st={}:d={}",
+                    f((c.length() - c.fade_out).max(0.0)),
+                    f(c.fade_out)
+                ));
+            }
+            let ms = (c.start * 1000.0).round() as i64;
+            parts.push(format!("adelay={ms}:all=1"));
+            let label = format!("a{}", alabels.len());
+            let _ = write!(g, ";[{idx}:a]{}[{label}]", parts.join(","));
+            alabels.push(label);
+        }
+    }
+    let has_audio = !alabels.is_empty() && req.preset != Preset::Gif;
+    if has_audio {
+        let ins: String = alabels.iter().map(|l| format!("[{l}]")).collect();
+        let mut tail = format!(
+            "amix=inputs={}:normalize=0:dropout_transition=0,aresample=48000",
+            alabels.len()
+        );
+        if req.loudness {
+            tail.push_str(",loudnorm=I=-14:TP=-1.5:LRA=11");
+        }
+        // Pad with silence so sound always covers the whole timeline (freeze frames, gaps at the end).
+        let _ = write!(
+            g,
+            ";{ins}{tail},apad=whole_dur={},atrim=start={}:end={},asetpts=PTS-STARTPTS[aout]",
+            f(total),
+            f(range_start),
+            f(range_end)
+        );
+    }
+
+    // 9. Encoders.
+    let mut args = inputs.args;
+    let graph_file = tmp.join("graph.txt");
+    std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+
+    if req.preset == Preset::Gif {
+        let _ = write!(g, ";[vout]fps={},split[ga][gb];[ga]palettegen=stats_mode=diff[gp];[gb][gp]paletteuse=dither=sierra2_4a[gif]", limits::fps_to_ffmpeg(fps));
+        std::fs::write(&graph_file, &g).map_err(|e| e.to_string())?;
+        args.extend([
+            "-filter_complex_script".into(),
+            graph_file.to_string_lossy().to_string(),
+            "-map".into(),
+            "[gif]".into(),
+            "-loop".into(),
+            "0".into(),
+        ]);
+    } else if req.preset == Preset::Audio {
+        if !has_audio {
+            return Err("This project has no sound to export.".into());
+        }
+        // Audio only: drop the picture graph entirely so no video is processed.
+        let audio_graph = g[video_end..].trim_start_matches(';').to_string();
+        std::fs::write(&graph_file, &audio_graph).map_err(|e| e.to_string())?;
+        args.extend([
+            "-filter_complex_script".into(),
+            graph_file.to_string_lossy().to_string(),
+            "-map".into(),
+            "[aout]".into(),
+            "-c:a".into(),
+            "libmp3lame".into(),
+            "-q:a".into(),
+            "2".into(),
+        ]);
+    } else {
+        std::fs::write(&graph_file, &g).map_err(|e| e.to_string())?;
+        args.extend([
+            "-filter_complex_script".into(),
+            graph_file.to_string_lossy().to_string(),
+            "-map".into(),
+            "[vout]".into(),
+        ]);
+        if has_audio {
+            args.extend(["-map".into(), "[aout]".into()]);
+        }
+        let kbps = if req.preset == Preset::Small {
+            let mb = req.target_mb.unwrap_or(25.0);
+            Some(
+                ((mb * 8.0 * 1024.0 * convert::SIZE_SAFETY / duration)
+                    - if has_audio { 128.0 } else { 0.0 })
+                .max(80.0),
+            )
+        } else {
+            None
+        };
+        let quality = if req.preset == Preset::Small {
+            Quality::Smaller
+        } else {
+            Quality::Same
+        };
+        args.extend(convert::h264_encoder(caps, req.use_hardware, kbps, quality).args);
+        args.extend(["-r".into(), limits::fps_to_ffmpeg(fps)]);
+        if has_audio {
+            args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "128k".into()]);
+        }
+        args.extend(["-movflags".into(), "+faststart".into()]);
+    }
+    temp_files.push(graph_file);
+    args.extend(["-t".into(), f(duration)]);
+    args.push(req.output.to_string_lossy().to_string());
+    Ok(ExportPlan {
+        args,
+        duration,
+        temp_files,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::*;
+
+    fn caps() -> Capabilities {
+        let mut c = Capabilities::default();
+        c.encoders.push("libx264".into());
+        c
+    }
+
+    fn demo() -> Project {
+        let mut p = Project::new("Demo", 1920, 1080, 30.0);
+        p.media.push(Media {
+            id: "m1".into(),
+            path: "C:/v/screen.mkv".into(),
+            kind: "video".into(),
+            duration: 60.0,
+            width: 1920,
+            height: 1080,
+            has_audio: true,
+            missing: false,
+        });
+        p.media.push(Media {
+            id: "m2".into(),
+            path: "C:/v/mic.wav".into(),
+            kind: "audio".into(),
+            duration: 60.0,
+            width: 0,
+            height: 0,
+            has_audio: true,
+            missing: false,
+        });
+        let mk = |id: &str, mid: &str, start: f64, i: f64, o: f64| Clip {
+            id: id.into(),
+            media_id: Some(mid.into()),
+            start,
+            in_point: i,
+            out: o,
+            speed: 1.0,
+            volume: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            reverse: false,
+            freeze: false,
+            transform: Transform {
+                scale: 1.0,
+                ..Default::default()
+            },
+            text: None,
+            shape: None,
+            clean_voice: false,
+        };
+        p.tracks[0].clips.push(mk("c1", "m1", 0.0, 0.0, 20.0));
+        p.tracks[0].clips.push(mk("c2", "m1", 20.0, 30.0, 40.0));
+        let mut voice = mk("c3", "m2", 0.0, 0.0, 30.0);
+        voice.clean_voice = true;
+        p.tracks[2].clips.push(voice);
+        let mut txt = mk("t1", "", 4.0, 0.0, 3.0);
+        txt.media_id = None;
+        txt.text = Some(TextProps {
+            text: "Click: Publish 'now' 100%".into(),
+            style: "callout".into(),
+            size: 48,
+            position: "bottom".into(),
+            color: "#ffffff".into(),
+            animation: "fade".into(),
+        });
+        p.tracks[1].clips.push(txt);
+        p
+    }
+
+    fn req(preset: Preset) -> ExportRequest {
+        ExportRequest {
+            preset,
+            output: "out.mp4".into(),
+            range: None,
+            width: None,
+            height: None,
+            fps: None,
+            burn_captions: false,
+            sidecar_captions: false,
+            loudness: true,
+            use_hardware: false,
+            target_mb: None,
+        }
+    }
+
+    fn graph(p: &Project, r: &ExportRequest) -> (String, ExportPlan) {
+        let tmp = tempfile::tempdir().unwrap().keep();
+        let plan = build(p, r, &caps(), Path::new("C:/fonts/Inter.ttf"), &tmp).unwrap();
+        let g = std::fs::read_to_string(tmp.join("graph.txt")).unwrap();
+        (g, plan)
+    }
+
+    #[test]
+    fn media_is_input_once_and_clips_are_placed() {
+        let (g, plan) = graph(&demo(), &req(Preset::Share));
+        assert_eq!(plan.args.iter().filter(|a| *a == "-i").count(), 2);
+        assert!(g.contains("trim=start=30:end=40"));
+        assert!(g.contains("setpts=PTS+20/TB"));
+        assert!(g.contains("between(t,20,30)"));
+        assert!((plan.duration - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn audio_is_mixed_cleaned_and_normalised() {
+        let (g, _) = graph(&demo(), &req(Preset::Share));
+        assert!(g.contains("amix=inputs=3"));
+        assert!(g.contains("afftdn"));
+        assert!(g.contains("adelay=20000:all=1"));
+        assert!(g.contains("loudnorm=I=-14"));
+    }
+
+    #[test]
+    fn text_uses_a_file_so_quotes_and_colons_are_safe() {
+        let (g, plan) = graph(&demo(), &req(Preset::Share));
+        assert!(g.contains("textfile="));
+        assert!(!g.contains("Publish 'now'"));
+        let txt = plan
+            .temp_files
+            .iter()
+            .find(|p| p.to_string_lossy().contains("text-0"))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(txt).unwrap(),
+            "Click: Publish 'now' 100%"
+        );
+        assert!(g.contains("fontfile='C\\:/fonts/Inter.ttf'"));
+        assert!(g.contains("alpha="));
+    }
+
+    #[test]
+    fn zoom_expression_ramps() {
+        let z = vec![Zoom {
+            start: 2.0,
+            end: 5.0,
+            scale: 2.0,
+            x: 0.8,
+            y: 0.7,
+        }];
+        let e = zoom_expr(&z, 0.5, "it");
+        assert_eq!(e, "1+1*clip((it-2)/0.5,0,1)*clip((5-it)/0.5,0,1)");
+        assert!(focus_expr(&z, 0.5, true, "it").contains("0.8"));
+        let mut p = demo();
+        p.zooms = z;
+        let (g, _) = graph(&p, &req(Preset::Share));
+        assert!(g.contains("zoompan=z='1+"));
+    }
+
+    #[test]
+    fn speed_reverse_freeze() {
+        assert_eq!(atempo_chain(4.0), vec!["atempo=2", "atempo=2"]);
+        assert_eq!(atempo_chain(0.25), vec!["atempo=0.5", "atempo=0.5"]);
+        assert_eq!(atempo_chain(1.5), vec!["atempo=1.5"]);
+        assert!(atempo_chain(1.0).is_empty());
+        let mut p = demo();
+        p.tracks[0].clips[0].speed = 2.0;
+        p.tracks[0].clips[1].reverse = true;
+        let (g, _) = graph(&p, &req(Preset::Share));
+        assert!(g.contains("setpts=PTS/2"));
+        assert!(g.contains("reverse"));
+        let mut p2 = demo();
+        p2.tracks[0].clips[0].freeze = true;
+        let (g2, _) = graph(&p2, &req(Preset::Share));
+        assert!(g2.contains("loop=loop=-1:size=1"));
+    }
+
+    #[test]
+    fn range_export_and_audio_only() {
+        let mut r = req(Preset::Share);
+        r.range = Some((5.0, 12.5));
+        let (g, plan) = graph(&demo(), &r);
+        assert!(g.contains("trim=start=5:end=12.5"));
+        assert!((plan.duration - 7.5).abs() < 1e-9);
+        let mut a = req(Preset::Audio);
+        a.output = "out.mp3".into();
+        let (_, plan) = graph(&demo(), &a);
+        assert!(plan.args.join(" ").contains("libmp3lame"));
+        assert!(plan.args.contains(&"[aout]".to_string()));
+    }
+
+    #[test]
+    fn vertical_fills_and_gif_has_palette() {
+        let (g, _) = graph(&demo(), &req(Preset::Vertical));
+        assert!(g.contains("s=1080x1920") && g.contains("crop=1080:1920"));
+        let mut gr = req(Preset::Gif);
+        gr.output = "o.gif".into();
+        let (g, plan) = graph(&demo(), &gr);
+        assert!(g.contains("palettegen"));
+        assert!(!plan.args.contains(&"[aout]".to_string()));
+    }
+
+    #[test]
+    fn small_preset_targets_bitrate() {
+        let (_, plan) = graph(&demo(), &req(Preset::Small));
+        let j = plan.args.join(" ");
+        assert!(j.contains("-b:v"), "{j}");
+    }
+
+    #[test]
+    fn padding_radius_and_shapes() {
+        let mut p = demo();
+        p.settings.padding = 60;
+        p.settings.radius = 24;
+        p.settings.background = "#1e2a4a".into();
+        p.tracks[1].clips.push(Clip {
+            id: "b".into(),
+            media_id: None,
+            start: 1.0,
+            in_point: 0.0,
+            out: 2.0,
+            speed: 1.0,
+            volume: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            reverse: false,
+            freeze: false,
+            transform: Transform::default(),
+            text: None,
+            shape: Some(ShapeProps {
+                shape: "blur".into(),
+                rect: [0.1, 0.1, 0.2, 0.1],
+                color: String::new(),
+            }),
+            clean_voice: false,
+        });
+        let (g, _) = graph(&p, &req(Preset::Share));
+        assert!(g.contains("color=c=0x1e2a4a"));
+        assert!(g.contains("geq="));
+        assert!(g.contains("scale=1800:960"));
+        assert!(g.contains("boxblur=20:3"));
+    }
+
+    #[test]
+    fn custom_resolution_is_clamped() {
+        let mut r = req(Preset::Custom);
+        r.width = Some(99999);
+        r.height = Some(3);
+        r.fps = Some(1000.0);
+        let (g, plan) = graph(&demo(), &r);
+        assert!(g.contains("s=7680x72"));
+        assert!(plan.args.join(" ").contains("-r 240"));
+    }
+
+    #[test]
+    fn empty_timeline_is_a_clear_error() {
+        let p = Project::new("x", 1920, 1080, 30.0);
+        let tmp = tempfile::tempdir().unwrap();
+        let e = build(
+            &p,
+            &req(Preset::Share),
+            &caps(),
+            Path::new("f.ttf"),
+            tmp.path(),
+        )
+        .err()
+        .unwrap();
+        assert!(e.contains("empty"));
+    }
+}

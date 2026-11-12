@@ -1,0 +1,10 @@
+.keys/
+node_modules/
+target/
+dist/
+app/src-tauri/binaries/
+app/src-tauri/gen/
+*.log
+.DS_Store
+release-assets/
+.claude/

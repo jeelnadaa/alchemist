@@ -1,0 +1,45 @@
+name: Set up Alchemist build
+description: Node, Rust (with target), caches, system libraries, npm deps and the pinned FFmpeg sidecar.
+inputs:
+  target:
+    description: Rust target triple
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: app/package-lock.json
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.target }}
+        components: rustfmt, clippy
+    # Incremental build output cached per target; keyed on the lockfile so an
+    # unrelated change keeps the cache.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: app/src-tauri -> target
+        key: ${{ inputs.target }}
+        cache-on-failure: true
+    - name: Linux system libraries
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxtst-dev libxi-dev libx11-dev libxdo-dev rpm ffmpeg
+    - name: FFmpeg sidecar cache
+      uses: actions/cache@v4
+      with:
+        path: app/src-tauri/binaries
+        key: ffmpeg-b6.1.1-${{ inputs.target }}
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd app && npm ci --no-fund --no-audit
+        cd .. && node scripts/fetch-ffmpeg.mjs ${{ inputs.target }}
+    - name: Make (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: command -v make || choco install make -y --no-progress

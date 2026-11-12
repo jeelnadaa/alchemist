@@ -1,0 +1,91 @@
+# Pull requests and pushes: build and test only. Never releases, never bumps versions.
+# Docs-only, website-only and comment-only changes skip the app builds entirely.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.f.outputs.app }}
+      windows: ${{ steps.f.outputs.windows }}
+      macos: ${{ steps.f.outputs.macos }}
+      linux: ${{ steps.f.outputs.linux }}
+      shared: ${{ steps.f.outputs.shared }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            app:
+              - 'app/**'
+              - 'scripts/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+            shared:
+              - 'app/src/**'
+              - 'app/src-tauri/src/**'
+              - 'app/src-tauri/tests/**'
+              - 'app/src-tauri/Cargo.*'
+              - 'app/src-tauri/tauri.conf.json'
+              - 'app/package*.json'
+              - 'scripts/**'
+              - 'Makefile'
+            windows:
+              - 'app/src-tauri/platform/windows/**'
+            macos:
+              - 'app/src-tauri/platform/macos/**'
+            linux:
+              - 'app/src-tauri/platform/linux/**'
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, family: windows }
+          - { os: macos-14, target: aarch64-apple-darwin, family: macos }
+          - { os: macos-13, target: x86_64-apple-darwin, family: macos }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, family: linux }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, family: linux }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Skip platforms this change can't affect
+        id: gate
+        shell: bash
+        run: |
+          shared='${{ needs.changes.outputs.shared }}'
+          mine='${{ needs.changes.outputs[matrix.family] }}'
+          if [ "$shared" = "true" ] || [ "$mine" = "true" ] || [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; echo "No changes for ${{ matrix.family }}; skipping."; fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+      - uses: ./.github/actions/setup
+        if: steps.gate.outputs.run == 'true'
+        with:
+          target: ${{ matrix.target }}
+      - name: Lint
+        if: steps.gate.outputs.run == 'true' && matrix.family == 'linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: make lint
+      - name: Test
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: make test TARGET=${{ matrix.target }}
+      - name: Build
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: cd app && npx tauri build --target ${{ matrix.target }} --no-bundle

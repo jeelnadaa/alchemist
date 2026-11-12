@@ -1,0 +1,8 @@
+{
+  "appBinaryMB": 12,
+  "installerMB": 40,
+  "coldStartSeconds": 1.0,
+  "idleTrayMB": 30,
+  "recordingMB": 100,
+  "recordingCpuPercent": 5
+}

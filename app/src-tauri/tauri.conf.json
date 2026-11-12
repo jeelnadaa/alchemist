@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Alchemist",
+  "version": "../package.json",
+  "identifier": "com.jeelnadaa.alchemist",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.github.com",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg", "app", "appimage", "deb", "rpm"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Alchemist",
+    "category": "Video",
+    "shortDescription": "Record, edit, convert and compress video. Locally.",
+    "longDescription": "Alchemist is a featherweight, local-first video studio: screen recorder, editor, converter, compressor and enhancer in one fast, private app.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/Inter-Bold.ttf": "resources/Inter-Bold.ttf",
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
+    "externalBin": ["binaries/ffmpeg"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": null,
+      "exceptionDomain": null,
+      "signingIdentity": null,
+      "providerShortName": null
+    },
+    "linux": {
+      "deb": { "recommends": ["ffmpeg"] },
+      "rpm": { "recommends": ["ffmpeg"] }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIxRThFNjM0MTVDMTI1MTIKUldRU0pjRVZOT2JvSWNzVzV1VnBsR1NzTzhWUWp4UTRoaEZvSXRhWkdabVJWdG15dDhZS1ZtdUYK",
+      "endpoints": ["https://github.com/jeelnadaa/alchemist/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

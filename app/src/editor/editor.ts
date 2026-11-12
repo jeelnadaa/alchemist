@@ -1,0 +1,1103 @@
+// The editor: preview, a side panel that only shows what the selection
+// needs, and a multi-track timeline. All edits go through editor/model.ts.
+
+import { call, fileUrl, pickFiles, pickFolder, pickSave, reveal, type Caption, type Clip, type Job, type Media, type Project, type Track, type Zoom } from "../api";
+import { clear, debounce, h, icon } from "../dom";
+import { clock, fileName, timecode } from "../format";
+import { go, take, type Route } from "../router";
+import { actionFor, bindings } from "../shortcuts";
+import type { Shell } from "../shell";
+import { store } from "../store";
+import { chipGroup, errorText, modal, rangeControl, toast, toggleRow } from "../ui/common";
+import { openPalette, rememberFile } from "../ui/palette";
+import { openExport } from "./exportDialog";
+import * as M from "./model";
+
+type Sel = { kind: "clip"; id: string } | { kind: "zoom"; index: number } | null;
+
+const PLAYABLE = /\.(mp4|m4v|webm|mov|mp3|wav|m4a|aac|ogg|opus|flac|png|jpe?g|webp|gif)$/i;
+
+export async function mount(shell: Shell, route: Route) {
+  let project: Project;
+  try {
+    project = await openProject(route.arg);
+  } catch (e) {
+    toast(errorText(e), { error: true });
+    go("");
+    return;
+  }
+  localStorage.setItem("alc-last-project", project.id);
+  const ed = new Editor(shell, project);
+  await ed.init();
+  const want = take<string>("editor-open");
+  if (want) ed.openRequest(want);
+  return () => ed.destroy();
+}
+
+async function openProject(arg: string | null): Promise<Project> {
+  if (arg && arg !== "new") return call<Project>("project_load", { id: arg });
+  let files = take<string[]>("new-edit-files");
+  take("new-edit");
+  if (!files) files = await pickFiles({ multiple: true });
+  if (!files.length) throw "No video chosen.";
+  files.forEach(rememberFile);
+  const media = await call<Media[]>("media_import", { paths: files });
+  const first = media.find((m) => m.kind === "video");
+  let p = await call<Project>("project_new", { name: fileName(files[0]).replace(/\.[^.]+$/, ""), width: first?.width || 1920, height: first?.height || 1080, fps: 30 });
+  for (const m of media) p = M.addMedia(p, m);
+  await call("project_save", { project: p });
+  history.replaceState(null, "", `#/edit/${p.id}`);
+  return p;
+}
+
+class Editor {
+  p: Project;
+  hist = new M.History();
+  sel: Sel = null;
+  t = 0;
+  playing = false;
+  pxPerSec = 40;
+  openSection = "";
+  showAll = false;
+  saved = true;
+  private raf = 0;
+  private lastFrame = 0;
+  private videos = new Map<string, HTMLVideoElement | HTMLAudioElement | HTMLImageElement>();
+  private urls = new Map<string, string>();
+  private waves = new Map<string, number[]>();
+  private proxies = new Map<string, string>();
+  private unsubs: (() => void)[] = [];
+  // DOM
+  root!: HTMLElement;
+  stage!: HTMLElement;
+  canvas!: HTMLElement;
+  overlayLayer!: HTMLElement;
+  inspector!: HTMLElement;
+  tl!: HTMLElement;
+  tlGrid!: HTMLElement;
+  playhead!: HTMLElement;
+  timeEl!: HTMLElement;
+  playBtn!: HTMLButtonElement;
+  banner!: HTMLElement;
+  savedEl!: HTMLElement;
+  nameEl!: HTMLElement;
+
+  constructor(private shell: Shell, p: Project) {
+    this.p = p;
+  }
+
+  async init() {
+    this.hist.load(await call<{ undo: string[]; redo: string[] }>("history_load", { id: this.p.id }).catch(() => null));
+    this.buildDom();
+    this.unsubs.push(store.sub("jobs", () => this.onJobs()));
+    const onKey = (e: KeyboardEvent) => this.onKey(e);
+    document.addEventListener("keydown", onKey);
+    this.unsubs.push(() => document.removeEventListener("keydown", onKey));
+    const onResize = () => this.layoutStage();
+    window.addEventListener("resize", onResize);
+    this.unsubs.push(() => window.removeEventListener("resize", onResize));
+    await this.loadMedia();
+    this.renderAll();
+    this.checkMissing();
+    this.suggestSilence();
+  }
+
+  destroy() {
+    this.pause();
+    cancelAnimationFrame(this.raf);
+    this.unsubs.forEach((u) => u());
+    for (const el of this.videos.values()) if (el instanceof HTMLMediaElement) { el.pause(); el.removeAttribute("src"); el.load(); }
+    this.saveNow();
+  }
+
+  // ------------------------------------------------------------ editing
+
+  commit(next: Project, keepSel = true) {
+    if (next === this.p) return;
+    this.hist.push(this.p);
+    this.p = next;
+    if (!keepSel && this.sel?.kind === "clip" && !M.find(this.p, this.sel.id)) this.sel = null;
+    if (this.sel?.kind === "clip" && !M.find(this.p, this.sel.id)) this.sel = null;
+    this.markDirty();
+    this.renderAll();
+  }
+
+  markDirty() {
+    this.saved = false;
+    this.savedEl.textContent = "Saving…";
+    this.save();
+  }
+
+  save = debounce(() => this.saveNow(), 700);
+
+  async saveNow() {
+    try {
+      await call("project_save", { project: this.p });
+      await call("history_save", { id: this.p.id, history: this.hist.toJSON() });
+      this.saved = true;
+      if (this.savedEl) this.savedEl.replaceChildren(icon("check", 13), "Saved");
+    } catch (e) {
+      if (this.savedEl) this.savedEl.textContent = "Not saved";
+      toast(`Couldn't save: ${errorText(e)}`, { error: true });
+    }
+  }
+
+  undo() {
+    const prev = this.hist.undo(this.p);
+    if (prev) { this.p = prev; this.markDirty(); this.renderAll(); }
+  }
+  redo() {
+    const next = this.hist.redo(this.p);
+    if (next) { this.p = next; this.markDirty(); this.renderAll(); }
+  }
+
+  selectedClip(): { track: Track; clip: Clip } | null {
+    return this.sel?.kind === "clip" ? M.find(this.p, this.sel.id) : null;
+  }
+
+  // ------------------------------------------------------------ DOM
+
+  buildDom() {
+    this.nameEl = h("strong", { tabindex: "0", title: "Click to rename", style: { cursor: "text" }, onclick: () => this.rename() }, this.p.name);
+    this.savedEl = h("span", { class: "tiny muted row", style: { gap: "4px" } }, icon("check", 13), "Saved");
+    this.shell.setCrumbs(h("span", { class: "row", style: { gap: "8px" } }, h("a", { href: "#/projects" }, "Projects"), h("span", { class: "muted" }, "/"), this.nameEl, this.savedEl));
+    this.shell.setTitleRight(h("div", { class: "row", style: { gap: "4px" } },
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Undo", title: "Undo", onclick: () => this.undo() }, icon("undo", 18)),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Redo", title: "Redo", onclick: () => this.redo() }, icon("redo", 18)),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Project options", title: "More", onclick: () => this.projectMenu() }, icon("more", 18)),
+      h("button", { type: "button", class: "btn primary", style: { height: "36px", marginLeft: "6px" }, onclick: () => this.export() }, "Export")));
+
+    this.banner = h("div", { class: "col", style: { gap: "8px" } });
+    this.canvas = h("div", { class: "canvas" });
+    this.overlayLayer = h("div", { class: "canvas", style: { pointerEvents: "none" } });
+    this.stage = h("div", { class: "stage", role: "img", "aria-label": "Video preview" }, this.canvas, this.overlayLayer);
+    this.timeEl = h("span", { class: "mono small" });
+    this.playBtn = h("button", { type: "button", class: "play", "aria-label": "Play", onclick: () => this.toggle() }, icon("play", 16)) as HTMLButtonElement;
+    const preview = h("section", { class: "ed-preview", "aria-label": "Preview" },
+      this.banner,
+      h("div", { class: "stage-wrap" }, this.stage),
+      h("div", { class: "transport" },
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Back 5 seconds", onclick: () => this.seek(this.t - 5) }, icon("back", 18)),
+        this.playBtn,
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Forward 5 seconds", onclick: () => this.seek(this.t + 5) }, icon("forward", 18)),
+        this.timeEl));
+    this.inspector = h("aside", { class: "inspector", "aria-label": "Settings for the selection" });
+    this.tl = h("div", { class: "tl-scroll" });
+    const tools = h("div", { class: "tl-tools", role: "toolbar", "aria-label": "Timeline tools" },
+      this.tool("split", "Split", "S", () => this.split()),
+      this.tool("trash", "Delete", "", () => this.deleteSel(false)),
+      h("span", { style: { width: "1px", height: "22px", background: "var(--line)", margin: "0 6px" } }),
+      this.tool("text", "Text", "", () => this.addText()),
+      this.tool("box", "Shapes & blur", "", () => this.shapesMenu()),
+      this.tool("captions", "Captions", "", () => this.openRequest("captions")),
+      this.tool("media", "Add media", "", () => this.addMediaFiles()),
+      this.tool("marker", "Marker", "M", () => this.addMarker()),
+      h("span", { class: "grow" }),
+      h("span", { class: "tiny muted" }, "Zoom"),
+      (() => {
+        const r = h("input", { type: "range", min: "5", max: "300", value: String(this.pxPerSec), "aria-label": "Timeline zoom", style: { width: "120px", marginLeft: "8px" } }) as HTMLInputElement;
+        r.style.setProperty("--fill", `${((this.pxPerSec - 5) / 295) * 100}%`);
+        r.addEventListener("input", () => { this.pxPerSec = +r.value; r.style.setProperty("--fill", `${((+r.value - 5) / 295) * 100}%`); this.renderTimeline(); });
+        return r;
+      })());
+    this.root = h("div", { class: "editor" },
+      h("div", { class: "ed-top" }, preview, this.inspector),
+      h("section", { class: "timeline", "aria-label": "Timeline" }, tools, this.tl));
+    this.shell.main.appendChild(this.root);
+    new ResizeObserver(() => this.layoutStage()).observe(this.stage.parentElement!);
+  }
+
+  tool(ic: Parameters<typeof icon>[0], label: string, key: string, run: () => void) {
+    return h("button", { type: "button", class: "tool", onclick: run }, icon(ic, 15), label, key ? h("span", { class: "k" }, key) : null);
+  }
+
+  renderAll() {
+    this.layoutStage();
+    this.renderStage();
+    this.renderInspector();
+    this.renderTimeline();
+  }
+
+  // ------------------------------------------------------------ media
+
+  async loadMedia() {
+    for (const m of this.p.media) await this.ensureMedia(m);
+  }
+
+  async ensureMedia(m: Media) {
+    if (this.urls.has(m.id) || m.missing) return;
+    const playable = PLAYABLE.test(m.path) || m.path.startsWith("blob:");
+    if (!playable && m.kind !== "audio") {
+      const cached = localStorage.getItem(`alc-proxy:${m.path}`);
+      if (cached && (await call<boolean>("file_exists", { path: cached }))) {
+        this.urls.set(m.id, await fileUrl(cached));
+      } else {
+        const job = await call<Job>("make_proxy", { path: m.path, duration: m.duration });
+        store.jobs.set(job.id, job);
+        this.proxies.set(job.id, m.id);
+        this.banner.appendChild(h("div", { class: "notice", dataset: { proxy: job.id } }, h("span", { class: "grow" }, `Preparing a smooth preview of ${fileName(m.path)}. Editing works already; exports always use the original.`)));
+      }
+    } else {
+      this.urls.set(m.id, await fileUrl(m.path));
+    }
+    if (m.hasAudio || m.kind === "audio") {
+      call<number[]>("waveform", { path: m.path, buckets: Math.min(4000, Math.max(200, Math.round(m.duration * 20))) })
+        .then((w) => { this.waves.set(m.id, w); this.renderTimeline(); })
+        .catch(() => {});
+    }
+  }
+
+  onJobs() {
+    for (const [jobId, mediaId] of this.proxies) {
+      const j = store.jobs.get(jobId);
+      if (!j || (j.status !== "done" && j.status !== "failed")) continue;
+      this.proxies.delete(jobId);
+      this.banner.querySelector(`[data-proxy="${jobId}"]`)?.remove();
+      const m = this.p.media.find((x) => x.id === mediaId);
+      if (j.status === "done" && m) {
+        localStorage.setItem(`alc-proxy:${m.path}`, j.output);
+        fileUrl(j.output).then((u) => { this.urls.set(mediaId, u); this.videos.delete(mediaId); this.renderStage(); });
+      }
+    }
+  }
+
+  element(m: Media): HTMLVideoElement | HTMLAudioElement | HTMLImageElement | null {
+    let el = this.videos.get(m.id);
+    const url = this.urls.get(m.id);
+    if (!url) return null;
+    if (!el) {
+      if (m.kind === "image") el = h("img", { class: "media", src: url, alt: "" }) as HTMLImageElement;
+      else if (m.kind === "audio") { el = new Audio(url); el.preload = "auto"; }
+      else { el = h("video", { preload: "auto", playsInline: true }) as HTMLVideoElement; el.src = url; }
+      this.videos.set(m.id, el);
+    }
+    return el;
+  }
+
+  // ------------------------------------------------------------ preview
+
+  layoutStage() {
+    const wrap = this.stage.parentElement as HTMLElement;
+    if (!wrap) return;
+    const W = wrap.clientWidth;
+    const H = wrap.clientHeight;
+    const ar = this.p.settings.width / this.p.settings.height;
+    let w = W;
+    let hgt = W / ar;
+    if (hgt > H) { hgt = H; w = H * ar; }
+    this.stage.style.width = `${Math.floor(w)}px`;
+    this.stage.style.height = `${Math.floor(hgt)}px`;
+    this.stage.style.setProperty("--scale", String(w / this.p.settings.width));
+  }
+
+  renderStage() {
+    const p = this.p;
+    const scale = this.stage.clientWidth / p.settings.width || 1;
+    const pad = Math.min(p.settings.padding, Math.min(p.settings.width, p.settings.height) / 3) * scale;
+    this.canvas.style.background = p.settings.background || "#000";
+    clear(this.canvas);
+    clear(this.overlayLayer);
+    const visual = p.tracks.filter((t) => t.kind === "video" || t.kind === "overlay");
+    const audible: { el: HTMLMediaElement; clip: Clip; track: Track }[] = [];
+    const overlays = document.createDocumentFragment();
+    for (const track of visual) {
+      const c = M.clipAt(track, this.t);
+      if (!c || !c.mediaId) continue;
+      const m = M.mediaOf(p, c);
+      if (!m) continue;
+      const el = this.element(m);
+      const box = h("div", { class: "layer" });
+      const tr = c.transform;
+      const sc = tr.scale || 1;
+      // Same maths as the export: fit the picture's shape into the padded box.
+      let bw = (this.stage.clientWidth - 2 * pad) * sc;
+      let bh = (this.stage.clientHeight - 2 * pad) * sc;
+      if (track.kind === "video" && m.width > 0 && m.height > 0) {
+        const rotated = ((tr.rotate || 0) % 180 + 180) % 180 === 90;
+        const [mw, mh] = rotated ? [m.height, m.width] : [m.width, m.height];
+        const f = Math.min(bw / mw, bh / mh);
+        bw = mw * f;
+        bh = mh * f;
+      }
+      Object.assign(box.style, {
+        left: `${(this.stage.clientWidth - bw) / 2 + tr.x * this.stage.clientWidth}px`,
+        top: `${(this.stage.clientHeight - bh) / 2 + tr.y * this.stage.clientHeight}px`,
+        width: `${bw}px`,
+        height: `${bh}px`,
+        borderRadius: track.kind === "video" && p.settings.radius && pad ? `${p.settings.radius * scale}px` : track.kind === "overlay" && m.kind === "video" ? "50%" : "0",
+        overflow: "hidden",
+        transform: `${tr.flipH ? "scaleX(-1)" : ""} ${tr.flipV ? "scaleY(-1)" : ""} rotate(${tr.rotate || 0}deg)`,
+        opacity: String(this.fadeAt(c)),
+      });
+      if (el) {
+        box.appendChild(el);
+        if (el instanceof HTMLMediaElement) {
+          if (track.kind === "overlay") (el as HTMLVideoElement).style.objectFit = "cover";
+          const want = M.sourceTime(c, this.t);
+          if (Math.abs(el.currentTime - want) > (this.playing ? 0.25 : 0.03)) el.currentTime = want;
+          el.playbackRate = Math.min(4, Math.max(0.25, c.speed));
+          audible.push({ el, clip: c, track });
+        }
+      } else {
+        box.appendChild(h("span", { class: "muted small" }, m.missing ? `Missing: ${fileName(m.path)}` : "Preparing preview…"));
+      }
+      // Overlays sit above the zoom, exactly like the export.
+      (track.kind === "overlay" ? overlays : this.canvas).appendChild(box);
+    }
+    if (!visual.some((t) => M.clipAt(t, this.t))) this.canvas.appendChild(h("div", { class: "layer", style: { inset: "0" } }, h("span", { class: "muted small" }, this.p.tracks.every((t) => !t.clips.length) ? "Add a video to begin" : "")));
+
+    // Audio-only clips.
+    for (const track of p.tracks.filter((t) => t.kind === "audio")) {
+      const c = M.clipAt(track, this.t);
+      if (!c?.mediaId) continue;
+      const m = M.mediaOf(p, c);
+      const el = m && this.element(m);
+      if (el instanceof HTMLMediaElement) {
+        const want = M.sourceTime(c, this.t);
+        if (Math.abs(el.currentTime - want) > (this.playing ? 0.25 : 0.03)) el.currentTime = want;
+        el.playbackRate = Math.min(4, Math.max(0.25, c.speed));
+        audible.push({ el, clip: c, track });
+      }
+    }
+    // Play/pause and volume for whatever is under the playhead; pause the rest.
+    const active = new Set(audible.map((a) => a.el));
+    for (const el of this.videos.values()) if (el instanceof HTMLMediaElement && !active.has(el) && !el.paused) el.pause();
+    for (const a of audible) {
+      const media = M.mediaOf(p, a.clip);
+      const soundFromVideoTrack = a.track.kind === "video" || a.track.kind === "audio";
+      a.el.muted = a.track.muted || !soundFromVideoTrack || (media?.kind === "video" && a.track.kind !== "video");
+      a.el.volume = Math.min(1, Math.max(0, a.clip.volume * a.track.volume * this.fadeAt(a.clip)));
+      if (this.playing && a.el.paused && !a.clip.freeze) a.el.play().catch(() => {});
+      if ((!this.playing || a.clip.freeze) && !a.el.paused) a.el.pause();
+    }
+
+    // Zoom applies to the picture (like export); overlays, text and shapes sit on top.
+    this.canvas.style.transform = M.previewTransform(p.zooms, p.zoomSmoothness, this.t);
+    this.overlayLayer.appendChild(overlays);
+
+    for (const track of p.tracks.filter((t) => t.kind === "text" || t.kind === "overlay")) {
+      for (const c of track.clips) {
+        if (this.t < c.start || this.t >= M.clipEnd(c)) continue;
+        const selected = this.sel?.kind === "clip" && this.sel.id === c.id;
+        if (c.text) {
+          const sizePx = (c.text.size || 48) * (this.stage.clientHeight / 1080);
+          const el = h("div", { class: `txt${selected ? " selected" : ""}`, style: { fontSize: `${sizePx}px`, color: c.text.color || "#fff", top: c.text.position === "top" ? "8%" : c.text.position === "middle" ? "50%" : "auto", bottom: c.text.position === "bottom" || !c.text.position ? "8%" : "auto", transform: c.text.position === "middle" ? "translate(-50%,-50%)" : "translateX(-50%)", opacity: String(c.text.animation === "fade" && this.playing ? this.fadeText(c) : 1), pointerEvents: "auto" } }, c.text.text);
+          el.addEventListener("mousedown", (e) => { e.stopPropagation(); this.select({ kind: "clip", id: c.id }); });
+          el.addEventListener("dblclick", () => { this.openSection = "Text"; this.renderInspector(); (this.inspector.querySelector("textarea") as HTMLTextAreaElement | null)?.focus(); });
+          this.overlayLayer.appendChild(el);
+        }
+        if (c.shape) this.overlayLayer.appendChild(this.shapeEl(c, selected));
+      }
+    }
+    for (const cap of p.captions) {
+      if (this.t >= cap.start && this.t < cap.end) {
+        this.overlayLayer.appendChild(h("div", { class: "txt", style: { fontSize: `${44 * (this.stage.clientHeight / 1080)}px`, bottom: "8%" } }, cap.text));
+      }
+    }
+    this.timeEl.replaceChildren(timecode(this.t, Math.round(p.settings.fps)), h("span", { class: "muted" }, ` / ${clock(M.duration(p))}`));
+    this.playhead && (this.playhead.style.left = `${this.t * this.pxPerSec}px`);
+  }
+
+  fadeAt(c: Clip): number {
+    const local = this.t - c.start;
+    const len = M.clipLength(c);
+    let a = 1;
+    if (c.fadeIn > 0) a = Math.min(a, local / c.fadeIn);
+    if (c.fadeOut > 0) a = Math.min(a, (len - local) / c.fadeOut);
+    return Math.max(0, Math.min(1, a));
+  }
+
+  fadeText(c: Clip): number {
+    return Math.max(0, Math.min(1, (this.t - c.start) / 0.3, (M.clipEnd(c) - this.t) / 0.3));
+  }
+
+  shapeEl(c: Clip, selected: boolean): HTMLElement {
+    const [x, y, w, hh] = c.shape!.rect;
+    const el = h("div", { class: `shape ${c.shape!.shape}${selected ? " selected" : ""}`, style: { left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${hh * 100}%`, borderColor: c.shape!.color || "var(--accent)", pointerEvents: "auto" } });
+    const grip = h("span", { style: { position: "absolute", right: "-6px", bottom: "-6px", width: "12px", height: "12px", background: "#fff", borderRadius: "3px", cursor: "nwse-resize" } });
+    el.appendChild(grip);
+    const drag = (e: MouseEvent, mode: "move" | "size") => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.select({ kind: "clip", id: c.id });
+      const r = this.stage.getBoundingClientRect();
+      const start = { x: e.clientX, y: e.clientY };
+      const orig = [...c.shape!.rect] as [number, number, number, number];
+      const before = this.p;
+      let next = this.p;
+      const move = (ev: MouseEvent) => {
+        const dx = (ev.clientX - start.x) / r.width;
+        const dy = (ev.clientY - start.y) / r.height;
+        next = M.update(before, c.id, (cl) => {
+          cl.shape!.rect = mode === "move"
+            ? [Math.min(1 - orig[2], Math.max(0, orig[0] + dx)), Math.min(1 - orig[3], Math.max(0, orig[1] + dy)), orig[2], orig[3]]
+            : [orig[0], orig[1], Math.max(0.03, Math.min(1 - orig[0], orig[2] + dx)), Math.max(0.03, Math.min(1 - orig[1], orig[3] + dy))];
+        });
+        this.p = next;
+        this.renderStage();
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        this.p = before;
+        this.commit(next);
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    };
+    el.addEventListener("mousedown", (e) => drag(e, "move"));
+    grip.addEventListener("mousedown", (e) => drag(e, "size"));
+    return el;
+  }
+
+  // ------------------------------------------------------------ playback
+
+  toggle() {
+    this.playing ? this.pause() : this.play();
+  }
+
+  play() {
+    if (this.t >= M.duration(this.p) - 0.05) this.t = this.p.inPoint ?? 0;
+    this.playing = true;
+    this.playBtn.replaceChildren(icon("pause", 16));
+    this.playBtn.setAttribute("aria-label", "Pause");
+    this.lastFrame = performance.now();
+    const loop = (now: number) => {
+      if (!this.playing) return;
+      this.t += (now - this.lastFrame) / 1000;
+      this.lastFrame = now;
+      const end = this.p.outPoint ?? M.duration(this.p);
+      if (this.t >= end) { this.t = end; this.pause(); }
+      this.renderStage();
+      this.followPlayhead();
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  pause() {
+    this.playing = false;
+    cancelAnimationFrame(this.raf);
+    for (const el of this.videos.values()) if (el instanceof HTMLMediaElement) el.pause();
+    if (this.playBtn) { this.playBtn.replaceChildren(icon("play", 16)); this.playBtn.setAttribute("aria-label", "Play"); }
+  }
+
+  seek(t: number) {
+    this.t = Math.max(0, Math.min(M.duration(this.p), t));
+    this.renderStage();
+    this.followPlayhead();
+  }
+
+  followPlayhead() {
+    const x = this.t * this.pxPerSec + 122;
+    const sc = this.tl;
+    if (x < sc.scrollLeft + 130 || x > sc.scrollLeft + sc.clientWidth - 40) sc.scrollLeft = Math.max(0, x - 200);
+  }
+
+  // ------------------------------------------------------------ timeline
+
+  renderTimeline() {
+    const p = this.p;
+    const total = Math.max(M.duration(p) + 10, 30);
+    const width = total * this.pxPerSec;
+    const keepScroll = this.tl.scrollLeft;
+    clear(this.tl);
+    const grid = h("div", { class: "tl-grid", style: { width: `${width + 140}px` } });
+    // Ruler
+    const ruler = h("div", { class: "tl-ruler", role: "slider", "aria-label": "Playhead", "aria-valuemin": "0", "aria-valuemax": String(Math.round(M.duration(p))), "aria-valuenow": String(Math.round(this.t)) });
+    const step = [1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => s * this.pxPerSec >= 70) || 600;
+    for (let s = 0; s <= total; s += step) ruler.appendChild(h("span", { style: { left: `${s * this.pxPerSec}px` } }, clock(s)));
+    for (const mk of p.markers) ruler.appendChild(h("span", { class: "marker", title: mk.label || "Marker", style: { left: `${mk.t * this.pxPerSec}px` } }));
+    const seekFrom = (e: MouseEvent) => {
+      const r = ruler.getBoundingClientRect();
+      this.seek((e.clientX - r.left) / this.pxPerSec);
+    };
+    ruler.addEventListener("mousedown", (e) => {
+      seekFrom(e);
+      const mv = (ev: MouseEvent) => seekFrom(ev);
+      const up = () => { document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up); };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    });
+    grid.append(h("span"), ruler);
+
+    // Zoom lane (only if there are zooms).
+    if (p.zooms.length) {
+      const lane = h("div", { class: "tl-lane" });
+      p.zooms.forEach((z, i) => {
+        const el = h("button", { type: "button", class: `tl-zoom${this.sel?.kind === "zoom" && this.sel.index === i ? " sel" : ""}`, style: { left: `${z.start * this.pxPerSec}px`, width: `${Math.max(14, (z.end - z.start) * this.pxPerSec)}px`, border: "0", color: "var(--text)" }, onclick: () => this.select({ kind: "zoom", index: i }) }, `${z.scale.toFixed(1)}×`);
+        lane.appendChild(el);
+      });
+      grid.append(h("div", { class: "tl-label" }, "Zoom"), lane);
+    }
+
+    for (const track of p.tracks) {
+      const label = h("div", { class: "tl-label" },
+        h("span", { class: "grow", style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, track.name),
+        track.kind !== "text" ? h("button", { type: "button", title: track.muted ? "Unmute" : "Mute", "aria-label": `${track.muted ? "Unmute" : "Mute"} ${track.name}`, onclick: () => this.commit({ ...M.clone(p), tracks: p.tracks.map((t) => (t.id === track.id ? { ...t, muted: !t.muted } : t)) }) }, icon(track.muted ? "close" : "speaker", 14)) : null);
+      const lane = h("div", { class: "tl-lane", dataset: { track: track.id } });
+      for (const c of track.clips) lane.appendChild(this.clipEl(track, c));
+      lane.addEventListener("mousedown", (e) => {
+        if (e.target === lane) { this.select(null); }
+      });
+      grid.append(label, lane);
+    }
+    // In/out range and playhead.
+    if (p.inPoint != null || p.outPoint != null) {
+      const a = p.inPoint ?? 0;
+      const b = p.outPoint ?? M.duration(p);
+      grid.appendChild(h("div", { class: "inout", style: { left: `${122 + a * this.pxPerSec}px`, width: `${(b - a) * this.pxPerSec}px` } }));
+    }
+    this.playhead = h("div", { class: "playhead", style: { left: `${this.t * this.pxPerSec}px`, marginLeft: "122px" } });
+    grid.appendChild(this.playhead);
+    this.tl.appendChild(grid);
+    this.tl.scrollLeft = keepScroll;
+    this.tlGrid = grid;
+  }
+
+  clipEl(track: Track, c: Clip): HTMLElement {
+    const m = M.mediaOf(this.p, c);
+    const len = M.clipLength(c);
+    const label = c.text ? c.text.text : c.shape ? { rect: "Box", highlight: "Highlight", blur: "Blur", pixelate: "Pixelate" }[c.shape.shape] || "Shape" : m ? fileName(m.path) : "Clip";
+    const kind = c.text || c.shape ? "text" : track.kind;
+    const selected = this.sel?.kind === "clip" && this.sel.id === c.id;
+    const el = h("div", { class: `tl-clip ${kind}${selected ? " sel" : ""}`, role: "button", tabindex: "0", "aria-label": `${label}, ${clock(c.start)} to ${clock(c.start + len)}`, style: { left: `${c.start * this.pxPerSec}px`, width: `${Math.max(6, len * this.pxPerSec)}px` } });
+    const wave = m && this.waves.get(m.id);
+    if (wave && (track.kind === "audio" || track.kind === "video")) {
+      const box = h("span", { class: "wave" });
+      const n = Math.max(4, Math.min(300, Math.round((len * this.pxPerSec) / 3)));
+      for (let i = 0; i < n; i++) {
+        const srcT = c.in + ((c.out - c.in) * i) / n;
+        const v = wave[Math.min(wave.length - 1, Math.floor((srcT / Math.max(m!.duration, 0.01)) * wave.length))] || 0;
+        box.appendChild(h("i", { style: { height: `${Math.max(6, v * 100)}%` } }));
+      }
+      el.appendChild(box);
+    }
+    el.appendChild(h("span", { style: { position: "relative", textShadow: "0 1px 2px rgba(0,0,0,.5)" } }, c.freeze ? `Freeze · ${label}` : c.speed !== 1 ? `${label} · ${c.speed}×` : label));
+    const left = h("span", { class: "edge l" });
+    const right = h("span", { class: "edge r" });
+    el.append(left, right);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") this.select({ kind: "clip", id: c.id }); });
+
+    const startDrag = (e: MouseEvent, mode: "move" | "l" | "r") => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.select({ kind: "clip", id: c.id });
+      const x0 = e.clientX;
+      const before = this.p;
+      let next = before;
+      let moved = false;
+      const snapPx = 8 / this.pxPerSec;
+      const mv = (ev: MouseEvent) => {
+        const dt = (ev.clientX - x0) / this.pxPerSec;
+        if (Math.abs(ev.clientX - x0) > 2) moved = true;
+        if (mode === "move") {
+          const laneEl = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>(".tl-lane");
+          next = M.move(before, c.id, c.start + dt, laneEl?.dataset.track, snapPx, this.t);
+        } else if (mode === "l") {
+          next = M.trim(before, c.id, "start", M.snap(before, c.start + dt, snapPx, c.id, [this.t]));
+        } else {
+          next = M.trim(before, c.id, "end", M.snap(before, M.clipEnd(c) + dt, snapPx, c.id, [this.t]));
+        }
+        this.p = next;
+        this.renderTimeline();
+        this.renderStage();
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", mv);
+        document.removeEventListener("mouseup", up);
+        this.p = before;
+        if (moved) this.commit(next);
+        else this.renderAll();
+      };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    };
+    el.addEventListener("mousedown", (e) => startDrag(e, "move"));
+    left.addEventListener("mousedown", (e) => startDrag(e, "l"));
+    right.addEventListener("mousedown", (e) => startDrag(e, "r"));
+    return el;
+  }
+
+  select(s: Sel) {
+    this.sel = s;
+    this.openSection = "";
+    this.renderInspector();
+    this.renderTimeline();
+    this.renderStage();
+  }
+
+  // ------------------------------------------------------------ inspector
+
+  renderInspector() {
+    clear(this.inspector);
+    const sections = this.sectionsFor();
+    const title = this.selectionTitle();
+    this.inspector.appendChild(h("div", { class: "head col", style: { gap: "2px" } }, h("span", { class: "tiny muted" }, this.sel ? "Selected" : "Project"), h("strong", null, title)));
+    const list = h("div", { class: "sections" });
+    const visible = this.showAll ? sections : sections.slice(0, 4);
+    const open = this.openSection && visible.some((s) => s.title === this.openSection) ? this.openSection : visible[0]?.title;
+    for (const s of visible) {
+      const isOpen = this.showAll || s.title === open;
+      const btn = h("button", { type: "button", class: "sec-btn", "aria-expanded": String(isOpen), onclick: () => { this.openSection = s.title === open && !this.showAll ? "-" : s.title; this.renderInspector(); } },
+        h("span", null, s.title), h("span", { class: "row tiny muted", style: { gap: "8px", fontWeight: "400" } }, s.summary || "", icon("chevron", 14)));
+      list.appendChild(btn);
+      if (isOpen) list.appendChild(h("div", { class: "sec-body" }, ...s.build()));
+    }
+    this.inspector.appendChild(list);
+    if (sections.length > 4 || !this.showAll) {
+      this.inspector.appendChild(h("button", { type: "button", class: "btn ghost", style: { margin: "8px 12px 14px", justifyContent: "flex-start" }, onclick: () => { this.showAll = !this.showAll; this.renderInspector(); } }, this.showAll ? "Show fewer settings" : this.sel ? "Show all settings for this item" : "Show all project settings"));
+    }
+  }
+
+  selectionTitle(): string {
+    if (this.sel?.kind === "zoom") return `Zoom · ${clock(this.p.zooms[this.sel.index]?.start ?? 0)}`;
+    const f = this.selectedClip();
+    if (!f) return this.p.name;
+    const c = f.clip;
+    if (c.text) return `Text · ${clock(c.start)} to ${clock(M.clipEnd(c))}`;
+    if (c.shape) return `${c.shape.shape[0].toUpperCase()}${c.shape.shape.slice(1)} · ${clock(c.start)}`;
+    const m = M.mediaOf(this.p, c);
+    return `${m ? fileName(m.path) : "Clip"} · ${clock(c.start)} to ${clock(M.clipEnd(c))}`;
+  }
+
+  sectionsFor(): { title: string; summary?: string; build: () => (Node | null)[] }[] {
+    const p = this.p;
+    if (this.sel?.kind === "zoom") {
+      const i = this.sel.index;
+      const z = p.zooms[i];
+      if (!z) return [];
+      const upd = (patch: Partial<Zoom>, live = false) => {
+        const next = M.clone(p);
+        Object.assign(next.zooms[i], patch);
+        if (live) { this.p = next; this.renderStage(); } else this.commit(next);
+      };
+      return [{ title: "Zoom", summary: `${z.scale.toFixed(1)}×`, build: () => [
+        rangeControl("How close", z.scale, 1.1, 4, 0.1, (v) => `${v.toFixed(1)}×`, (v) => upd({ scale: v }, true), (v) => upd({ scale: v })),
+        rangeControl("Focus left to right", z.x, 0, 1, 0.01, (v) => `${Math.round(v * 100)}%`, (v) => upd({ x: v }, true), (v) => upd({ x: v })),
+        rangeControl("Focus top to bottom", z.y, 0, 1, 0.01, (v) => `${Math.round(v * 100)}%`, (v) => upd({ y: v }, true), (v) => upd({ y: v })),
+        h("button", { type: "button", class: "btn", onclick: () => { const next = M.clone(p); next.zooms.splice(i, 1); this.sel = null; this.commit(next); } }, icon("trash", 15), "Remove this zoom"),
+      ] }];
+    }
+    const f = this.selectedClip();
+    if (!f) return this.projectSections();
+    const { clip: c, track } = f;
+    const id = c.id;
+    const live = (fn: (c: Clip) => void) => { this.p = M.update(this.p, id, fn); this.renderStage(); };
+    const before = () => this.p;
+    let snapshot = before();
+    const commitFrom = (fn: (c: Clip) => void) => { const base = snapshot; this.p = base; this.commit(M.update(base, id, fn)); snapshot = this.p; };
+    const slider = (label: string, v: number, min: number, max: number, step: number, fmt: (v: number) => string, set: (c: Clip, v: number) => void) =>
+      rangeControl(label, v, min, max, step, fmt, (x) => live((cl) => set(cl, x)), (x) => commitFrom((cl) => set(cl, x)));
+    const m = M.mediaOf(p, c);
+
+    if (c.text) {
+      const t = c.text;
+      return [
+        { title: "Text", build: () => {
+          const ta = h("textarea", { class: "input", "aria-label": "Text", rows: 3 }, t.text) as HTMLTextAreaElement;
+          ta.addEventListener("input", () => live((cl) => (cl.text!.text = ta.value)));
+          ta.addEventListener("change", () => commitFrom((cl) => (cl.text!.text = ta.value)));
+          return [ta, chipGroup("Style", [["caption", "Caption"], ["title", "Title"], ["label", "Label"], ["callout", "Callout"]], (t.style || "callout") as "caption", (v) => commitFrom((cl) => { cl.text!.style = v; cl.text!.size = v === "title" ? 72 : v === "label" ? 32 : 48; }))];
+        } },
+        { title: "Size and place", summary: t.position || "bottom", build: () => [
+          slider("Size", t.size, 16, 160, 1, (v) => `${v} px`, (cl, v) => (cl.text!.size = v)),
+          chipGroup("Place", [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], (t.position || "bottom") as "top", (v) => commitFrom((cl) => (cl.text!.position = v))),
+          chipGroup("Colour", [["#ffffff", "White"], ["#ffd84d", "Yellow"], ["#7ea3ff", "Blue"], ["#5fdca5", "Green"]], (t.color || "#ffffff") as "#ffffff", (v) => commitFrom((cl) => (cl.text!.color = v))),
+        ] },
+        { title: "Animation", summary: t.animation || "none", build: () => [chipGroup("In and out", [["none", "None"], ["fade", "Fade"]], (t.animation || "none") as "none", (v) => commitFrom((cl) => (cl.text!.animation = v)))] },
+        this.timingSection(c),
+      ];
+    }
+    if (c.shape) {
+      return [
+        { title: "Shape", summary: c.shape.shape, build: () => [
+          chipGroup("Kind", [["rect", "Box"], ["highlight", "Highlight"], ["blur", "Blur"], ["pixelate", "Pixelate"]], c.shape!.shape as "rect", (v) => commitFrom((cl) => (cl.shape!.shape = v))),
+          chipGroup("Colour", [["#5b8cff", "Blue"], ["#f05252", "Red"], ["#ffd84d", "Yellow"], ["#ffffff", "White"]], (c.shape!.color || "#5b8cff") as "#5b8cff", (v) => commitFrom((cl) => (cl.shape!.color = v))),
+          h("p", { class: "tiny muted" }, "Drag the box in the preview to move it; drag its corner to resize."),
+        ] },
+        this.timingSection(c),
+      ];
+    }
+    const out: { title: string; summary?: string; build: () => (Node | null)[] }[] = [];
+    if (track.kind === "video" && m?.kind === "video") {
+      out.push({ title: "Zoom", summary: p.zooms.length ? "Auto" : "Off", build: () => this.zoomControls() });
+    }
+    if (track.kind === "overlay" || m?.kind === "image") {
+      out.push({ title: "Position and size", summary: `${Math.round(c.transform.scale * 100)}%`, build: () => [
+        slider("Size", c.transform.scale, 0.05, 1, 0.01, (v) => `${Math.round(v * 100)}%`, (cl, v) => (cl.transform.scale = v)),
+        slider("Left and right", c.transform.x, -0.5, 0.5, 0.01, (v) => `${Math.round(v * 100)}`, (cl, v) => (cl.transform.x = v)),
+        slider("Up and down", c.transform.y, -0.5, 0.5, 0.01, (v) => `${Math.round(v * 100)}`, (cl, v) => (cl.transform.y = v)),
+      ] });
+    }
+    if (m && m.kind !== "image") {
+      out.push({ title: "Speed", summary: c.freeze ? "Freeze" : `${c.speed}×`, build: () => [
+        chipGroup("Speed", [["0.5", "0.5×"], ["1", "1×"], ["1.5", "1.5×"], ["2", "2×"], ["4", "4×"]], String(c.speed) as "1", (v) => this.commit(M.setSpeed(this.p, id, +v))),
+        toggleRow("Play backwards", "Shown in the export; the preview plays forwards.", c.reverse, (v) => commitFrom((cl) => (cl.reverse = v))),
+        h("button", { type: "button", class: "btn", onclick: () => this.commit(M.freezeFrame(this.p, id, Math.max(c.start + 0.05, Math.min(M.clipEnd(c) - 0.05, this.t)), 2)) }, "Freeze frame here for 2 s"),
+      ] });
+    }
+    if (m && (m.hasAudio || m.kind === "audio")) {
+      out.push({ title: "Sound", summary: `${Math.round(c.volume * 100)}%`, build: () => [
+        slider("Volume", c.volume, 0, 2, 0.01, (v) => `${Math.round(v * 100)}%`, (cl, v) => (cl.volume = v)),
+        toggleRow("Clean up voice", "Removes hum and background noise.", c.cleanVoice, (v) => commitFrom((cl) => (cl.cleanVoice = v))),
+        h("button", { type: "button", class: "btn", onclick: () => this.findSilence(m) }, "Find silent parts"),
+      ] });
+    }
+    if (track.kind === "video" && m?.kind === "video") {
+      out.push({ title: "Crop, rotate, flip", summary: c.transform.rotate ? `${c.transform.rotate}°` : "", build: () => [
+        chipGroup("Rotate", [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]], String(c.transform.rotate || 0) as "0", (v) => commitFrom((cl) => (cl.transform.rotate = +v))),
+        toggleRow("Flip left to right", null, c.transform.flipH, (v) => commitFrom((cl) => (cl.transform.flipH = v))),
+        toggleRow("Flip upside down", null, c.transform.flipV, (v) => commitFrom((cl) => (cl.transform.flipV = v))),
+        slider("Zoom in (crop)", c.transform.crop ? 1 / c.transform.crop[2] : 1, 1, 3, 0.05, (v) => `${v.toFixed(2)}×`, (cl, v) => { const s = 1 / v; cl.transform.crop = v <= 1.001 ? null : [(1 - s) / 2, (1 - s) / 2, s, s]; }),
+      ] });
+    }
+    out.push({ title: "Fade in and out", summary: c.fadeIn || c.fadeOut ? "On" : "Off", build: () => [
+      slider("Fade in", c.fadeIn, 0, 5, 0.1, (v) => `${v.toFixed(1)} s`, (cl, v) => (cl.fadeIn = v)),
+      slider("Fade out", c.fadeOut, 0, 5, 0.1, (v) => `${v.toFixed(1)} s`, (cl, v) => (cl.fadeOut = v)),
+    ] });
+    out.push(this.timingSection(c));
+    return out;
+  }
+
+  timingSection(c: Clip) {
+    return { title: "Timing", summary: `${M.clipLength(c).toFixed(1)} s`, build: () => {
+      const start = h("input", { class: "input", type: "number", step: "0.1", value: c.start.toFixed(2), "aria-label": "Starts at (seconds)" }) as HTMLInputElement;
+      const len = h("input", { class: "input", type: "number", step: "0.1", min: "0.1", value: M.clipLength(c).toFixed(2), "aria-label": "Length (seconds)" }) as HTMLInputElement;
+      start.addEventListener("change", () => this.commit(M.move(this.p, c.id, +start.value)));
+      len.addEventListener("change", () => this.commit(M.trim(this.p, c.id, "end", c.start + Math.max(0.1, +len.value))));
+      return [h("div", { class: "grid2" }, h("label", { class: "field" }, "Starts at (s)", start), h("label", { class: "field" }, "Length (s)", len)),
+        h("button", { type: "button", class: "btn", onclick: () => { const d = M.duplicate(this.p, c.id); this.commit(d.project); } }, "Duplicate")];
+    } };
+  }
+
+  zoomControls(): (Node | null)[] {
+    const p = this.p;
+    const hasEvents = !!p.events;
+    return [
+      hasEvents
+        ? toggleRow("Follow clicks automatically", "Zooms in where you clicked while recording.", p.zooms.length > 0, async (v) => { if (v) await this.autoZoom(0.5); else this.commit({ ...M.clone(p), zooms: [] }); })
+        : h("p", { class: "tiny muted" }, "Auto-zoom works on screen recordings made in Alchemist. You can still add zooms by hand."),
+      hasEvents && p.zooms.length ? rangeControl("How close", 0.5, 0, 1, 0.05, (v) => (v < 0.34 ? "Subtle" : v < 0.67 ? "Medium" : "Close"), () => {}, (v) => this.autoZoom(v)) : null,
+      rangeControl("Smoothness", p.zoomSmoothness, 0, 1, 0.05, (v) => (v < 0.34 ? "Snappy" : v < 0.67 ? "Smooth" : "Gentle"), (v) => { this.p = { ...this.p, zoomSmoothness: v }; this.renderStage(); }, (v) => { const base = { ...this.p }; this.p = p; this.commit({ ...base, zoomSmoothness: v }); }),
+      h("button", { type: "button", class: "btn", onclick: () => this.addZoomHere() }, icon("zoom", 15), "Add a zoom at the playhead"),
+    ];
+  }
+
+  async autoZoom(strength: number) {
+    const p = this.p;
+    if (!p.events) return;
+    const first = p.media.find((m) => m.kind === "video");
+    try {
+      const zooms = await call<Zoom[]>("auto_zoom", { events: p.events, origin: [0, 0], size: [first?.width || p.settings.width, first?.height || p.settings.height], strength });
+      this.commit({ ...M.clone(p), zooms });
+      toast(zooms.length ? `${zooms.length} zoom${zooms.length > 1 ? "s" : ""} added from your clicks.` : "No clicks were found in this recording.");
+    } catch (e) {
+      toast(errorText(e), { error: true });
+    }
+  }
+
+  addZoomHere() {
+    const next = M.clone(this.p);
+    next.zooms.push({ start: this.t, end: this.t + 3, scale: 2, x: 0.5, y: 0.5 });
+    next.zooms.sort((a, b) => a.start - b.start);
+    this.commit(next);
+    this.select({ kind: "zoom", index: next.zooms.findIndex((z) => z.start === this.t) });
+  }
+
+  projectSections() {
+    const p = this.p;
+    const s = p.settings;
+    const set = (patch: Partial<Project["settings"]>, liveOnly = false) => {
+      const next = { ...M.clone(this.p), settings: { ...this.p.settings, ...patch } };
+      if (liveOnly) { this.p = next; this.layoutStage(); this.renderStage(); } else { this.commit(next); }
+    };
+    return [
+      { title: "Captions", summary: p.captions.length ? String(p.captions.length) : "None", build: () => this.captionControls() },
+      { title: "Look", summary: s.padding ? "Framed" : "Plain", build: () => [
+        h("label", { class: "ctl" }, h("span", null, "Background"), h("input", { type: "color", value: s.background || "#000000", "aria-label": "Background colour", style: { width: "100%", height: "36px", border: "0", background: "none" }, onchange: (e: Event) => set({ background: (e.target as HTMLInputElement).value }) })),
+        rangeControl("Padding", s.padding, 0, 200, 2, (v) => `${v} px`, (v) => set({ padding: v }, true), (v) => set({ padding: v })),
+        rangeControl("Rounded corners", s.radius, 0, 80, 1, (v) => `${v} px`, (v) => set({ radius: v }, true), (v) => set({ radius: v })),
+        h("p", { class: "tiny muted" }, "Padding and rounded corners give recordings a clean app-demo look."),
+      ] },
+      { title: "Zoom", summary: p.zooms.length ? `${p.zooms.length}` : "Off", build: () => this.zoomControls() },
+      { title: "Size and frame rate", summary: `${s.width}×${s.height}`, build: () => {
+        const presets = h("div", { class: "chips" }, ...([["16:9", 1920, 1080], ["9:16", 1080, 1920], ["1:1", 1080, 1080], ["4:5", 1080, 1350]] as [string, number, number][]).map(([n, w, hh]) => h("button", { type: "button", "aria-pressed": String(s.width === w && s.height === hh), onclick: () => set({ width: w, height: hh }) }, n)));
+        const w = h("input", { class: "input", type: "number", value: String(s.width), "aria-label": "Width" }) as HTMLInputElement;
+        const hh = h("input", { class: "input", type: "number", value: String(s.height), "aria-label": "Height" }) as HTMLInputElement;
+        const f = h("input", { class: "input", type: "number", step: "0.01", value: String(s.fps), "aria-label": "Frame rate" }) as HTMLInputElement;
+        const apply = async () => {
+          const c = await call<{ value: { width: number; height: number; fps: number }; notes: string[] }>("check_limits", { width: +w.value, height: +hh.value, fps: +f.value });
+          c.notes.forEach((n) => toast(n));
+          set(c.value);
+        };
+        [w, hh, f].forEach((el) => el.addEventListener("change", apply));
+        return [presets, h("div", { class: "grid3" }, w, hh, f), h("p", { class: "tiny muted" }, "Changing this never damages your edit; clips are refitted.")];
+      } },
+      { title: "Markers and range", summary: p.inPoint != null || p.outPoint != null ? "Range set" : "", build: () => [
+        h("div", { class: "row wrap" },
+          h("button", { type: "button", class: "btn", onclick: () => this.commit({ ...M.clone(this.p), inPoint: this.t }) }, "Mark in here (I)"),
+          h("button", { type: "button", class: "btn", onclick: () => this.commit({ ...M.clone(this.p), outPoint: this.t }) }, "Mark out here (O)"),
+          p.inPoint != null || p.outPoint != null ? h("button", { type: "button", class: "btn ghost", onclick: () => this.commit({ ...M.clone(this.p), inPoint: null, outPoint: null }) }, "Clear range") : null),
+        ...p.markers.map((mk, i) => h("div", { class: "row small" }, h("button", { type: "button", class: "btn ghost", style: { height: "30px" }, onclick: () => this.seek(mk.t) }, clock(mk.t)), h("span", { class: "grow muted" }, mk.label || `Marker ${i + 1}`), h("button", { type: "button", class: "icon-btn", "aria-label": "Remove marker", onclick: () => { const n = M.clone(this.p); n.markers.splice(i, 1); this.commit(n); } }, icon("close", 13)))),
+      ] },
+    ];
+  }
+
+  captionControls(): (Node | null)[] {
+    const p = this.p;
+    const list = h("div", { class: "col", style: { gap: "6px" } });
+    p.captions.forEach((c, i) => {
+      const ta = h("input", { class: "input", value: c.text, "aria-label": `Caption at ${clock(c.start)}` }) as HTMLInputElement;
+      ta.addEventListener("change", () => { const n = M.clone(this.p); n.captions[i].text = ta.value; this.commit(n); });
+      list.appendChild(h("div", { class: "row" }, h("button", { type: "button", class: "btn ghost mono", style: { height: "32px", padding: "0 6px" }, onclick: () => this.seek(c.start) }, clock(c.start)), ta,
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Remove caption", onclick: () => { const n = M.clone(this.p); n.captions.splice(i, 1); this.commit(n); } }, icon("close", 13))));
+    });
+    return [
+      list,
+      h("div", { class: "row wrap" },
+        h("button", { type: "button", class: "btn", onclick: () => { const n = M.clone(this.p); n.captions.push({ start: this.t, end: this.t + 3, text: "New caption" }); n.captions.sort((a, b) => a.start - b.start); this.commit(n); } }, icon("plus", 14), "Add at playhead"),
+        h("button", { type: "button", class: "btn", onclick: () => this.importCaptions() }, "Import SRT or VTT"),
+        p.captions.length ? h("button", { type: "button", class: "btn", onclick: () => this.exportCaptions() }, "Save as SRT") : null),
+      h("p", { class: "tiny muted" }, "Automatic captions that run on this computer are coming in a later version. For now, type them or import a file."),
+    ];
+  }
+
+  async importCaptions() {
+    const [f] = await pickFiles({ subtitles: true });
+    if (!f) return;
+    try {
+      const caps = await call<Caption[]>("captions_import", { path: f });
+      this.commit({ ...M.clone(this.p), captions: caps });
+      toast(`${caps.length} captions imported.`);
+    } catch (e) {
+      toast(errorText(e), { error: true });
+    }
+  }
+
+  async exportCaptions() {
+    const path = await pickSave(`${this.p.name}.srt`, "srt");
+    if (!path) return;
+    await call("captions_export", { captions: this.p.captions, path }).then(() => toast("Captions saved.", { action: { label: "Show", run: () => reveal(path) } })).catch((e) => toast(errorText(e), { error: true }));
+  }
+
+  // ------------------------------------------------------------ actions
+
+  split() {
+    const f = this.selectedClip();
+    if (f && this.t > f.clip.start && this.t < M.clipEnd(f.clip)) this.commit(M.split(this.p, f.clip.id, this.t).project);
+    else this.commit(M.splitAll(this.p, this.t));
+  }
+
+  deleteSel(ripple: boolean) {
+    if (this.sel?.kind === "zoom") {
+      const n = M.clone(this.p);
+      n.zooms.splice(this.sel.index, 1);
+      this.sel = null;
+      return this.commit(n);
+    }
+    const f = this.selectedClip();
+    if (!f) return toast("Select a clip first.");
+    this.sel = null;
+    this.commit(M.remove(this.p, f.clip.id, ripple));
+  }
+
+  addText(text = "Your text", style = "callout") {
+    const r = M.addText(this.p, this.t, text, style);
+    this.commit(r.project);
+    this.select({ kind: "clip", id: r.id });
+    this.openSection = "Text";
+    this.renderInspector();
+    (this.inspector.querySelector("textarea") as HTMLTextAreaElement | null)?.select();
+  }
+
+  addShape(kind: "rect" | "highlight" | "blur" | "pixelate") {
+    const r = M.addShape(this.p, this.t, kind);
+    this.commit(r.project);
+    this.select({ kind: "clip", id: r.id });
+  }
+
+  shapesMenu() {
+    modal((close) => {
+      const opt = (k: "rect" | "highlight" | "blur" | "pixelate", title: string, sub: string, ic: Parameters<typeof icon>[0]) =>
+        h("button", { type: "button", class: "opt", style: { flexDirection: "row", alignItems: "center", gap: "14px" }, onclick: () => { close(); this.addShape(k); } }, h("span", { style: { color: "var(--accent)" } }, icon(ic, 20)), h("span", { class: "col", style: { gap: "2px" } }, h("strong", null, title), h("small", null, sub)));
+      return h("div", { class: "dialog", style: { width: "480px" } },
+        h("header", null, h("h2", null, "Add a shape"), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close", 16))),
+        h("div", { class: "content" },
+          opt("highlight", "Highlight", "Draw attention to a button or area", "box"),
+          opt("rect", "Box", "An outline around something", "box"),
+          opt("blur", "Blur", "Hide passwords, emails or faces", "blur"),
+          opt("pixelate", "Pixelate", "A stronger way to hide something", "blur")));
+    }, { label: "Add a shape" });
+  }
+
+  addMarker() {
+    const n = M.clone(this.p);
+    n.markers.push({ t: this.t, label: "" });
+    n.markers.sort((a, b) => a.t - b.t);
+    this.commit(n);
+  }
+
+  async addMediaFiles() {
+    const files = await pickFiles({ multiple: true });
+    if (!files.length) return;
+    try {
+      const media = await call<Media[]>("media_import", { paths: files });
+      let p = this.p;
+      for (const m of media) { p = M.addMedia(p, m); await this.ensureMedia(m); }
+      this.commit(p);
+    } catch (e) {
+      toast(errorText(e), { error: true });
+    }
+  }
+
+  async findSilence(m: Media, quiet = false) {
+    try {
+      const ranges = await call<{ start: number; end: number }[]>("detect_silence", { path: m.path });
+      // Map source time to timeline time through the clips that use this media.
+      const timeline: { start: number; end: number }[] = [];
+      for (const t of this.p.tracks) for (const c of t.clips) {
+        if (c.mediaId !== m.id || c.freeze || c.reverse) continue;
+        for (const r of ranges) {
+          const a = Math.max(r.start, c.in);
+          const b = Math.min(r.end, c.out);
+          if (b - a > 0.3) timeline.push({ start: c.start + (a - c.in) / c.speed, end: c.start + (b - c.in) / c.speed });
+        }
+      }
+      const total = timeline.reduce((s, r) => s + r.end - r.start, 0);
+      if (!timeline.length) {
+        if (!quiet) toast("No long pauses found.");
+        return;
+      }
+      const notice = h("div", { class: "notice", role: "status" },
+        icon("sparkle", 18),
+        h("span", { class: "grow" }, `Found ${timeline.length} silent pause${timeline.length > 1 ? "s" : ""}, ${Math.round(total)} seconds in total.`),
+        h("button", { type: "button", class: "btn primary", style: { height: "32px" }, onclick: () => { notice.remove(); this.commit(M.removeRanges(this.p, timeline)); toast("Pauses removed. Press Undo to bring them back."); } }, "Remove them"),
+        h("button", { type: "button", class: "btn ghost", style: { height: "32px" }, onclick: () => { notice.remove(); localStorage.setItem(`alc-silence-dismissed:${this.p.id}`, "1"); } }, "Not now"));
+      this.banner.appendChild(notice);
+    } catch (e) {
+      if (!quiet) toast(errorText(e), { error: true });
+    }
+  }
+
+  suggestSilence() {
+    if (localStorage.getItem(`alc-silence-dismissed:${this.p.id}`)) return;
+    const voice = this.p.media.find((m) => m.kind === "audio") || this.p.media.find((m) => m.hasAudio);
+    if (voice && !voice.missing && voice.duration > 20) this.findSilence(voice, true);
+  }
+
+  checkMissing() {
+    for (const m of this.p.media.filter((x) => x.missing)) {
+      const n = h("div", { class: "notice warn" }, h("span", { class: "grow" }, `"${fileName(m.path)}" has moved or been deleted.`),
+        h("button", { type: "button", class: "btn", style: { height: "32px" }, onclick: async () => {
+          const [f] = await pickFiles({});
+          if (!f) return;
+          try {
+            const p = await call<Project>("project_relink", { project: this.p, mediaId: m.id, path: f });
+            this.urls.delete(m.id);
+            this.videos.delete(m.id);
+            this.commit(p);
+            await this.ensureMedia(p.media.find((x) => x.id === m.id)!);
+            n.remove();
+            this.renderStage();
+          } catch (e) {
+            toast(errorText(e), { error: true });
+          }
+        } }, "Find it"));
+      this.banner.appendChild(n);
+    }
+  }
+
+  export() {
+    this.pause();
+    if (!M.duration(this.p)) return toast("Add a video first.");
+    openExport(this.p, () => toast(`Exporting "${this.p.name}". You can keep editing.`, { action: { label: "Show progress", run: () => document.querySelector<HTMLButtonElement>(".jobchip")?.click() } }));
+  }
+
+  rename() {
+    const input = h("input", { class: "input", value: this.p.name, style: { height: "30px", width: "220px" }, "aria-label": "Project name" }) as HTMLInputElement;
+    this.nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    const done = () => {
+      const name = input.value.trim() || this.p.name;
+      input.replaceWith(this.nameEl);
+      if (name !== this.p.name) {
+        this.commit({ ...M.clone(this.p), name });
+        this.nameEl.textContent = name;
+      }
+    };
+    input.addEventListener("blur", done);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); if (e.key === "Escape") { input.value = this.p.name; input.blur(); } });
+  }
+
+  projectMenu() {
+    modal((close) => {
+      const item = (title: string, sub: string, run: () => void, danger = false) => h("button", { type: "button", class: "opt", style: danger ? { borderColor: "color-mix(in srgb, var(--rec) 40%, transparent)" } : undefined, onclick: () => { close(); run(); } }, h("strong", null, title), h("small", null, sub));
+      return h("div", { class: "dialog", style: { width: "480px" } },
+        h("header", null, h("h2", null, "Project"), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close", 16))),
+        h("div", { class: "content" },
+          item("Add media", "Videos, sound or images", () => this.addMediaFiles()),
+          item("Package for another computer", "Copies the project and all its media into one folder", () => this.packageProject()),
+          item("Search everything", "Ctrl K", () => openPalette()),
+          item("Delete project", "The project is removed. Your original videos are kept.", async () => {
+            const { confirmDialog } = await import("../ui/common");
+            if (await confirmDialog("Delete this project?", "The project is removed. Your original videos are not touched.", "Delete", true)) {
+              await call("project_delete", { id: this.p.id });
+              localStorage.removeItem("alc-last-project");
+              go("projects");
+            }
+          }, true)));
+    }, { label: "Project options" });
+  }
+
+  async packageProject() {
+    const folder = await pickFolder();
+    if (!folder) return;
+    try {
+      const file = await call<string>("project_package", { project: this.p, dest: folder });
+      toast("Project packaged.", { action: { label: "Show", run: () => reveal(file) } });
+    } catch (e) {
+      toast(errorText(e), { error: true });
+    }
+  }
+
+  openRequest(what: string) {
+    if (what === "captions") { this.sel = null; this.openSection = "Captions"; this.renderInspector(); }
+    else if (what === "silence") { const m = this.p.media.find((x) => x.kind === "audio") || this.p.media.find((x) => x.hasAudio); if (m) this.findSilence(m); else toast("This project has no sound to check."); }
+    else if (what === "text") this.addText();
+    else if (what === "blur") this.addShape("blur");
+    else if (what === "export") this.export();
+    else if (what === "package") this.packageProject();
+  }
+
+  onKey(e: KeyboardEvent) {
+    const t = e.target as HTMLElement;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    if (document.querySelector(".scrim")) return;
+    const map = bindings(store.settings.shortcutPreset, store.settings.shortcuts);
+    const act = actionFor(e, map, "editor");
+    if (!act) return;
+    const editorActs: Record<string, () => void> = {
+      playPause: () => this.toggle(),
+      split: () => this.split(),
+      delete: () => this.deleteSel(false),
+      rippleDelete: () => this.deleteSel(true),
+      duplicate: () => { const f = this.selectedClip(); if (f) this.commit(M.duplicate(this.p, f.clip.id).project); },
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      markIn: () => this.commit({ ...M.clone(this.p), inPoint: this.t }),
+      markOut: () => this.commit({ ...M.clone(this.p), outPoint: this.t }),
+      addMarker: () => this.addMarker(),
+      export: () => this.export(),
+      frameBack: () => this.seek(this.t - 1 / this.p.settings.fps),
+      frameForward: () => this.seek(this.t + 1 / this.p.settings.fps),
+    };
+    if (editorActs[act]) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      editorActs[act]();
+    }
+  }
+}

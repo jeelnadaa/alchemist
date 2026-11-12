@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Alchemist — Record, edit, convert & compress video. Locally.</title>
+  <meta name="description" content="Alchemist is a featherweight, local-first video studio. Record your screen, edit, convert, compress and enhance in one fast, private app for Windows, macOS and Linux.">
+  <meta name="theme-color" content="#0b0c0f" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <link rel="canonical" href="/">
+  <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Alchemist — every video tool, one light app">
+  <meta property="og:description" content="Record, edit, convert, compress and enhance video in one featherweight, private app.">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <script src="/assets/js/theme-init.js"></script>
+
+  <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,800,900&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap">
+
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/landing.css">
+</head>
+<body class="page-landing">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="curtain" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+  <div class="curtain__mark" aria-hidden="true"><img src="/assets/img/logo.svg" alt=""></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- ============ NAV ============ -->
+  <header class="nav">
+    <div class="container">
+      <nav class="nav__inner" aria-label="Primary">
+        <a class="brand" href="/" aria-label="Alchemist home"><img src="/assets/img/logo.svg" alt="" width="28" height="28">Alchemist</a>
+        <ul class="nav__links">
+          <li><a href="#transmute">Features</a></li>
+          <li><a href="#light">Performance</a></li>
+          <li><a href="#themes">Themes</a></li>
+          <li><a href="#private">Privacy</a></li>
+        </ul>
+        <div class="nav__actions">
+          <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+            <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z"/></svg>
+            <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
+          </button>
+          <a class="btn btn--accent btn--sm" href="/download/" data-magnetic="0.25">Download</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============ HERO ============ -->
+    <section class="hero" aria-labelledby="hero-title">
+      <canvas class="hero__canvas" aria-hidden="true"></canvas>
+      <div class="hero__veil" aria-hidden="true"></div>
+
+      <div class="container hero__inner">
+        <a class="chip hero__chip" href="/download/"><span class="dot"></span><span data-latest-chip>Free for Windows, macOS &amp; Linux</span><span aria-hidden="true">→</span></a>
+
+        <h1 class="display hero__title" id="hero-title">
+          <span class="hero__line">Every video tool.</span>
+          <span class="hero__line">One <em class="serif grad-text hero__accent">light</em> app.</span>
+        </h1>
+
+        <p class="lede hero__lede">Record, edit, convert, compress and enhance video in one featherweight app. It runs entirely on your machine, starts in under a second, and barely touches your RAM.</p>
+
+        <div class="hero__cta">
+          <a class="btn btn--accent" href="/download/" data-magnetic data-os-cta>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+            <span class="btn-label" data-os-cta-label>Download Alchemist</span>
+          </a>
+          <a class="btn btn--ghost" href="#transmute" data-magnetic>See what it does</a>
+        </div>
+        <p class="hero__meta mono"><span>Installer &amp; portable</span><span aria-hidden="true">·</span><span>No account</span><span aria-hidden="true">·</span><span>Auto-updates</span></p>
+      </div>
+
+      <!-- App mockup (also cloned into the themes section) -->
+      <div class="container hero__stage">
+        <div class="app" data-app-theme="obsidian" id="app-mock" role="img" aria-label="Preview of the Alchemist editor with a video preview, inspector panel and multi-track timeline">
+          <div class="app__bar">
+            <span class="app__dots"><i></i><i></i><i></i></span>
+            <span class="app__title">product-demo.alc</span>
+            <span class="app__pill"><i></i>REC 00:12:48</span>
+          </div>
+          <div class="app__body">
+            <aside class="app__rail">
+              <span class="is-on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg></span>
+              <span><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h13"/></svg></span>
+              <span><svg viewBox="0 0 24 24"><path d="M7 7h10l-3-3M17 17H7l3 3"/></svg></span>
+              <span><svg viewBox="0 0 24 24"><path d="M8 4v6H4M16 20v-6h4M4 10l6-6M20 14l-6 6"/></svg></span>
+              <span><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2Z"/></svg></span>
+            </aside>
+            <div class="app__main">
+              <div class="app__viewer">
+                <div class="app__screen">
+                  <div class="app__window">
+                    <div class="app__wbar"><i></i><i></i><i></i></div>
+                    <div class="app__wbody">
+                      <span class="w1"></span><span class="w2"></span><span class="w3"></span>
+                      <span class="app__btn">Publish</span>
+                    </div>
+                  </div>
+                  <div class="app__cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.5L10 19z"/></svg><i class="ripple"></i></div>
+                  <div class="app__cam"></div>
+                </div>
+              </div>
+              <div class="app__timeline">
+                <div class="app__ruler"><span>00:00</span><span>00:05</span><span>00:10</span><span>00:15</span><span>00:20</span><span>00:25</span></div>
+                <div class="app__tracks">
+                  <div class="app__track"><span class="clip c1" style="--l:2%;--w:30%">screen.mkv</span><span class="clip c1" style="--l:34%;--w:40%">screen.mkv</span><span class="clip c4" style="--l:76%;--w:20%">outro</span></div>
+                  <div class="app__track"><span class="clip c2" style="--l:10%;--w:22%">zoom</span><span class="clip c2" style="--l:46%;--w:16%">zoom</span><span class="clip c3" style="--l:66%;--w:14%">Title</span></div>
+                  <div class="app__track app__track--wave"><span class="clip c5" style="--l:2%;--w:94%"><i class="wave"></i></span></div>
+                </div>
+                <div class="app__playhead"></div>
+              </div>
+            </div>
+            <aside class="app__panel">
+              <p class="app__label">Auto-zoom</p>
+              <div class="app__slider"><i style="--v:.62"></i></div>
+              <p class="app__label">Smoothness</p>
+              <div class="app__slider"><i style="--v:.8"></i></div>
+              <p class="app__label">Cursor size</p>
+              <div class="app__slider"><i style="--v:.4"></i></div>
+              <div class="app__toggles"><span class="on">Click ripple</span><span>Keystrokes</span><span class="on">Shadow</span></div>
+              <div class="app__export">Export · 24.8 MB</div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MARQUEE ============ -->
+    <section class="marquee" aria-label="Supported formats">
+      <div class="marquee__track">
+        <div class="marquee__row" aria-hidden="false">
+          <span>MP4</span><i>✦</i><span>MKV</span><i>✦</i><span>WebM</span><i>✦</i><span>MOV</span><i>✦</i><span>GIF</span><i>✦</i><span>AV1</span><i>✦</i><span>HEVC</span><i>✦</i><span>H.264</span><i>✦</i><span>VP9</span><i>✦</i><span>ProRes</span><i>✦</i><span>MP3</span><i>✦</i><span>FLAC</span><i>✦</i><span>Opus</span><i>✦</i><span>SRT</span><i>✦</i>
+        </div>
+        <div class="marquee__row" aria-hidden="true">
+          <span>MP4</span><i>✦</i><span>MKV</span><i>✦</i><span>WebM</span><i>✦</i><span>MOV</span><i>✦</i><span>GIF</span><i>✦</i><span>AV1</span><i>✦</i><span>HEVC</span><i>✦</i><span>H.264</span><i>✦</i><span>VP9</span><i>✦</i><span>ProRes</span><i>✦</i><span>MP3</span><i>✦</i><span>FLAC</span><i>✦</i><span>Opus</span><i>✦</i><span>SRT</span><i>✦</i>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FIVE TRANSMUTATIONS ============ -->
+    <section class="transmute" id="transmute" aria-labelledby="transmute-title">
+      <div class="container transmute__intro">
+        <span class="eyebrow">One app. Five transmutations.</span>
+        <h2 class="h2" id="transmute-title" data-split>Replace four tools with <span class="serif grad-text">one alembic.</span></h2>
+        <p class="lede" data-reveal>A screen recorder, an editor, a converter and a compressor, sharing one engine and one design language. Each part only loads when you use it.</p>
+      </div>
+
+      <div class="transmute__pin">
+        <div class="transmute__track">
+          <!-- 01 Record -->
+          <article class="stage card" data-stage>
+            <header class="stage__head"><span class="stage__num mono">01</span><h3 class="h3">Record</h3></header>
+            <p class="stage__copy"><em class="serif">Capture without the weight.</em> Full screen, a window or a region, plus webcam, system audio and mic on separate tracks. Crash-safe from the first frame.</p>
+            <div class="viz viz--record" aria-hidden="true">
+              <div class="rec__region"><span class="rec__corner tl"></span><span class="rec__corner tr"></span><span class="rec__corner bl"></span><span class="rec__corner br"></span><span class="rec__size mono">1920 × 1080 · 60 fps</span></div>
+              <div class="rec__bar"><span class="rec__dot"></span><span class="mono">00:12:48</span><span class="rec__meter"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div>
+              <ul class="rec__sidecar mono"><li>cursor.track</li><li>clicks.track</li><li>keys.track</li></ul>
+            </div>
+          </article>
+          <!-- 02 Edit -->
+          <article class="stage card" data-stage>
+            <header class="stage__head"><span class="stage__num mono">02</span><h3 class="h3">Edit</h3></header>
+            <p class="stage__copy"><em class="serif">Essentials, done really well.</em> Multi-track timeline, frame-accurate trims, auto-zoom on clicks, captions and undo that survives restarts.</p>
+            <div class="viz viz--edit" aria-hidden="true">
+              <div class="ed__track"><span class="ed__clip a"></span><span class="ed__clip b"></span><span class="ed__clip c"></span></div>
+              <div class="ed__track"><span class="ed__clip d"></span><span class="ed__clip e"></span></div>
+              <div class="ed__track ed__track--wave"><span class="ed__clip f"><i class="wave"></i></span></div>
+              <span class="ed__playhead"></span>
+              <span class="ed__blade"></span>
+            </div>
+          </article>
+          <!-- 03 Convert -->
+          <article class="stage card" data-stage>
+            <header class="stage__head"><span class="stage__num mono">03</span><h3 class="h3">Convert</h3></header>
+            <p class="stage__copy"><em class="serif">Any format in, any format out.</em> Batch queue, lossless remux when possible, hardware encoding with a software fallback.</p>
+            <div class="viz viz--convert" aria-hidden="true">
+              <div class="cv__from mono" data-scramble="MOV,MKV,AVI,WEBM">MOV</div>
+              <div class="cv__flow"><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="cv__to mono" data-scramble="MP4,GIF,AV1,MP3">MP4</div>
+            </div>
+          </article>
+          <!-- 04 Compress -->
+          <article class="stage card" data-stage>
+            <header class="stage__head"><span class="stage__num mono">04</span><h3 class="h3">Compress</h3></header>
+            <p class="stage__copy"><em class="serif">"Make this under 25 MB."</em> Pick a target size and Alchemist does the maths, then reports the real quality score and size saved.</p>
+            <div class="viz viz--compress" aria-hidden="true">
+              <div class="cp__num mono"><span data-count-from="1240" data-count-to="24.8" data-count-unit>1,240</span><small data-count-label>MB</small></div>
+              <div class="cp__bar"><i></i></div>
+              <div class="cp__legend mono"><span>before 1.24 GB</span><span>after 24.8 MB</span></div>
+            </div>
+          </article>
+          <!-- 05 Enhance -->
+          <article class="stage card" data-stage>
+            <header class="stage__head"><span class="stage__num mono">05</span><h3 class="h3">Enhance</h3></header>
+            <p class="stage__copy"><em class="serif">Rescue old footage.</em> Upscale, denoise, stabilize and smooth slow motion, always with an honest before/after split view.</p>
+            <div class="viz viz--enhance" data-compare data-cursor="Drag">
+              <div class="en__layer en__before"><div class="en__scene"></div></div>
+              <div class="en__layer en__after"><div class="en__scene"></div></div>
+              <div class="en__handle"><span></span></div>
+              <span class="en__tag en__tag--l mono">Before</span><span class="en__tag en__tag--r mono">After</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ LIGHTNESS ============ -->
+    <section class="section light" id="light" aria-labelledby="light-title">
+      <div class="container">
+        <div class="light__head">
+          <span class="eyebrow">Prime directive</span>
+          <h2 class="h2" id="light-title" data-split>As light as <span class="serif grad-text">possible.</span> Then lighter.</h2>
+          <p class="lede" data-reveal>Recording never pays for the editor. Converting never pays for the timeline. Memory stays flat no matter how long you record.</p>
+        </div>
+
+        <div class="light__grid">
+          <div class="stat card" data-reveal>
+            <span class="stat__k mono">Idle in tray</span>
+            <span class="stat__v"><span class="stat__lt">&lt;</span><span data-count="30">30</span><small>MB</small></span>
+            <span class="stat__bar"><i style="--v:.12"></i></span>
+          </div>
+          <div class="stat card" data-reveal data-reveal-delay=".08">
+            <span class="stat__k mono">Recording 1080p60</span>
+            <span class="stat__v"><span class="stat__lt">&lt;</span><span data-count="100">100</span><small>MB</small></span>
+            <span class="stat__bar"><i style="--v:.38"></i></span>
+          </div>
+          <div class="stat card" data-reveal data-reveal-delay=".16">
+            <span class="stat__k mono">Recorder cold start</span>
+            <span class="stat__v"><span class="stat__lt">&lt;</span><span data-count="1">1</span><small>sec</small></span>
+            <span class="stat__bar"><i style="--v:.2"></i></span>
+          </div>
+          <div class="stat card" data-reveal data-reveal-delay=".24">
+            <span class="stat__k mono">Recording CPU</span>
+            <span class="stat__v"><span class="stat__lt">&lt;</span><span data-count="5">5</span><small>%</small></span>
+            <span class="stat__bar"><i style="--v:.05"></i></span>
+          </div>
+        </div>
+
+        <figure class="chart card" data-reveal>
+          <figcaption class="chart__cap">
+            <span class="h3">Memory over a 2-hour recording</span>
+            <span class="chart__legend mono"><span class="lg lg--accent">Recorder budget</span><span class="lg lg--dim">Growing buffer (what we avoid)</span></span>
+          </figcaption>
+          <svg class="chart__svg" viewBox="0 0 1000 320" preserveAspectRatio="none" aria-hidden="true">
+            <g class="chart__grid">
+              <line x1="0" y1="64" x2="1000" y2="64"/><line x1="0" y1="128" x2="1000" y2="128"/><line x1="0" y1="192" x2="1000" y2="192"/><line x1="0" y1="256" x2="1000" y2="256"/>
+            </g>
+            <path class="chart__bad" d="M0 270 C 150 250, 260 220, 380 190 S 620 120, 760 90 S 920 40, 1000 22"/>
+            <path class="chart__area" d="M0 232 C 60 226, 120 230, 200 229 S 340 231, 420 230 S 560 228, 640 230 S 820 231, 1000 229 L1000 320 L0 320 Z"/>
+            <path class="chart__good" d="M0 232 C 60 226, 120 230, 200 229 S 340 231, 420 230 S 560 228, 640 230 S 820 231, 1000 229"/>
+            <circle class="chart__dot" cx="1000" cy="229" r="6"/>
+          </svg>
+          <div class="chart__axis mono"><span>0:00</span><span>0:30</span><span>1:00</span><span>1:30</span><span>2:00</span></div>
+          <p class="chart__note">These are the <strong>budgets</strong> every build must meet. Automated tests fail the build if any is exceeded, and real measured figures are published with every release.</p>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============ COMPRESS PLAYGROUND ============ -->
+    <section class="section squeeze" id="squeeze" aria-labelledby="squeeze-title">
+      <div class="container squeeze__grid">
+        <div>
+          <span class="eyebrow">Target-size mode</span>
+          <h2 class="h2" id="squeeze-title" data-split>Make it <span class="serif grad-text">fit.</span></h2>
+          <p class="lede" data-reveal>Tell Alchemist the size you need. It works out bitrate and resolution, previews a few seconds, and shows the real result before you commit.</p>
+          <div class="squeeze__presets" data-reveal role="group" aria-label="Size presets">
+            <button type="button" class="chip" data-size="10">Chat · 10 MB</button>
+            <button type="button" class="chip is-on" data-size="25">Email · 25 MB</button>
+            <button type="button" class="chip" data-size="50">Web · 50 MB</button>
+            <button type="button" class="chip" data-size="200">Archive · 200 MB</button>
+          </div>
+        </div>
+
+        <div class="squeeze__panel card" data-reveal>
+          <div class="sq__file">
+            <span class="sq__icon" aria-hidden="true"></span>
+            <div><strong>team-standup.mov</strong><span class="mono">1920×1080 · 60 fps · 3:00 · 1.24 GB</span></div>
+          </div>
+          <label class="sq__label" for="sq-range"><span>Target size</span><output class="mono" id="sq-out" for="sq-range">25 MB</output></label>
+          <input class="sq__range" id="sq-range" type="range" min="5" max="400" step="1" value="25" aria-describedby="sq-help">
+          <div class="sq__vis" aria-hidden="true">
+            <div class="sq__orig"><span>Original</span></div>
+            <div class="sq__new"><span>Alchemist</span></div>
+          </div>
+          <dl class="sq__stats">
+            <div><dt>Video bitrate</dt><dd class="mono" id="sq-bitrate">—</dd></div>
+            <div><dt>Resolution</dt><dd class="mono" id="sq-res">—</dd></div>
+            <div><dt>Smaller by</dt><dd class="mono" id="sq-ratio">—</dd></div>
+          </dl>
+          <p class="sq__help" id="sq-help">Bitrate and resolution are calculated from the target size and duration, with 128 kbps reserved for audio. The quality score is measured after the preview encode, never guessed.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ THEMES ============ -->
+    <section class="section themes" id="themes" aria-labelledby="themes-title">
+      <div class="container">
+        <div class="themes__head">
+          <span class="eyebrow">Themes</span>
+          <h2 class="h2" id="themes-title" data-split>Ten moods. <span class="serif grad-text">Plus yours.</span></h2>
+          <p class="lede" data-reveal>Five dark and five light themes, including high-contrast. Follow your system, pick an accent, or import your own. Switching is instant and costs nothing.</p>
+        </div>
+        <div class="themes__layout">
+          <div class="themes__picker" role="radiogroup" aria-label="Preview a theme" data-reveal>
+            <p class="themes__group mono">Dark</p>
+            <button type="button" role="radio" class="swatch is-on" aria-checked="true" data-set-theme="obsidian"><i style="--a:#0d0e12;--b:#5b8cff"></i>Obsidian</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="mercury"><i style="--a:#101317;--b:#9ec3ff"></i>Mercury</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="cinnabar"><i style="--a:#170b0a;--b:#ff6a4a"></i>Cinnabar</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="verdigris"><i style="--a:#081312;--b:#4fd1b0"></i>Verdigris</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="hc-dark"><i style="--a:#000;--b:#ffe500"></i>High contrast</button>
+            <p class="themes__group mono">Light</p>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="parchment"><i style="--a:#f4eee2;--b:#b06b16"></i>Parchment</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="salt"><i style="--a:#fbfbfa;--b:#2f6bff"></i>Salt</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="quartz"><i style="--a:#f3eef1;--b:#7c4dde"></i>Quartz</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="goldleaf"><i style="--a:#fbf3dd;--b:#a77a06"></i>Gold Leaf</button>
+            <button type="button" role="radio" class="swatch" aria-checked="false" data-set-theme="hc-light"><i style="--a:#fff;--b:#0038d1"></i>High contrast</button>
+          </div>
+          <div class="themes__stage" data-theme-stage></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PRIVACY ============ -->
+    <section class="section private" id="private" aria-labelledby="private-title">
+      <div class="container">
+        <span class="eyebrow">Local-first</span>
+        <h2 class="sr-only" id="private-title">Private by design</h2>
+        <p class="private__text" data-scrub>Your footage <em class="serif">never</em> leaves your machine. No account. No cloud. No telemetry. Originals are never modified, and if your power cuts out mid-recording, you lose seconds, not the session.</p>
+        <ul class="private__list">
+          <li class="card" data-reveal><span class="mono">01</span><strong>Works offline</strong><span>Every core feature runs without a network.</span></li>
+          <li class="card" data-reveal data-reveal-delay=".08"><span class="mono">02</span><strong>Non-destructive</strong><span>Edits and effects sit on top of the original file.</span></li>
+          <li class="card" data-reveal data-reveal-delay=".16"><span class="mono">03</span><strong>On-device AI</strong><span>Captions and cleanup run locally, and unload when done.</span></li>
+          <li class="card" data-reveal data-reveal-delay=".24"><span class="mono">04</span><strong>Opt-in only</strong><span>Anything connected is off by default and clearly labelled.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ UPDATES ============ -->
+    <section class="section updates" id="updates" aria-labelledby="updates-title">
+      <div class="container updates__grid">
+        <div>
+          <span class="eyebrow">Always current</span>
+          <h2 class="h2" id="updates-title" data-split>Updates itself. <span class="serif grad-text">Safely.</span></h2>
+          <p class="lede" data-reveal>New versions come straight from GitHub Releases. Every update is signed and verified, waits until you're idle, and rolls back on its own if anything goes wrong.</p>
+          <ol class="updates__steps">
+            <li data-reveal><span class="mono">i.</span><div><strong>Checks quietly</strong><span>Once a day, from GitHub only. No tracking, no identifiers.</span></div></li>
+            <li data-reveal data-reveal-delay=".08"><span class="mono">ii.</span><div><strong>Verifies everything</strong><span>Checksum and signature are checked before anything is applied.</span></div></li>
+            <li data-reveal data-reveal-delay=".16"><span class="mono">iii.</span><div><strong>Never interrupts</strong><span>Not during a recording, an export or a conversion. Ever.</span></div></li>
+          </ol>
+        </div>
+        <div class="updates__visual" aria-hidden="true">
+          <div class="upd card">
+            <div class="upd__head"><img src="/assets/img/logo.svg" alt="" width="36" height="36"><div><strong>Update ready</strong><span class="mono" data-upd-version>Alchemist 1.5.0</span></div></div>
+            <div class="upd__progress"><i></i></div>
+            <ul class="upd__checks mono">
+              <li><span class="tick"></span>Downloaded · resumable</li>
+              <li><span class="tick"></span>SHA-256 verified</li>
+              <li><span class="tick"></span>Signature verified</li>
+              <li><span class="tick"></span>Waiting for export to finish…</li>
+            </ul>
+            <div class="upd__actions"><span class="upd__btn">Restart &amp; update</span><span class="upd__later">Later</span></div>
+          </div>
+          <div class="orbit"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FINAL CTA ============ -->
+    <section class="final" aria-labelledby="final-title">
+      <div class="final__glow" aria-hidden="true"></div>
+      <div class="container final__inner">
+        <h2 class="final__title" id="final-title"><span data-final-word>Transmute.</span></h2>
+        <p class="lede">Installer or portable. Windows, macOS and Linux. Free, private and fast.</p>
+        <div class="hero__cta">
+          <a class="btn btn--accent" href="/download/" data-magnetic data-os-cta data-cursor="Get it">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+            <span class="btn-label" data-os-cta-label>Download Alchemist</span>
+          </a>
+          <a class="btn btn--ghost" href="/download/#all" data-magnetic>All platforms</a>
+        </div>
+        <div class="final__os mono" aria-label="Supported platforms">
+          <span>Windows 10/11 · x64 · arm64</span><span>macOS 12+ · Apple silicon · Intel</span><span>Linux · AppImage · deb · rpm</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__grid">
+        <div>
+          <a class="brand" href="/"><img src="/assets/img/logo.svg" alt="" width="28" height="28">Alchemist</a>
+          <p style="max-width:34ch;margin-top:14px">A featherweight, local-first video studio. Record, edit, convert, compress and enhance.</p>
+        </div>
+        <div><h4>Product</h4><ul><li><a href="#transmute">Features</a></li><li><a href="#light">Performance</a></li><li><a href="#themes">Themes</a></li><li><a href="/download/">Download</a></li></ul></div>
+        <div><h4>Project</h4><ul><li><a data-gh-link href="https://github.com/" rel="noopener">GitHub</a></li><li><a data-gh-link="/releases" href="https://github.com/" rel="noopener">Releases</a></li><li><a data-gh-link="/issues" href="https://github.com/" rel="noopener">Report an issue</a></li></ul></div>
+        <div><h4>Trust</h4><ul><li><a href="#private">Privacy</a></li><li><a href="/download/#verify">Verify downloads</a></li><li><a href="#updates">How updates work</a></li></ul></div>
+      </div>
+      <div class="footer__word" aria-hidden="true">Alchemist</div>
+      <div class="footer__bottom"><span>© <span data-year></span> Alchemist</span><span>No cookies. No trackers. Just a website.</span></div>
+    </div>
+  </footer>
+
+  <script src="/assets/js/config.js"></script>
+  <script src="/assets/vendor/gsap.min.js" defer></script>
+  <script src="/assets/vendor/ScrollTrigger.min.js" defer></script>
+  <script src="/assets/vendor/lenis.min.js" defer></script>
+  <script src="/assets/js/common.js" defer></script>
+  <script src="/assets/js/landing.js" defer></script>
+</body>
+</html>

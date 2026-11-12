@@ -1,0 +1,174 @@
+# Automatic versioning and releases.
+#
+# 1. Every push to main updates one "release PR" with the next version and the
+#    changelog, worked out from commit messages:
+#      fix: → patch   feat: → minor   feat!: / BREAKING CHANGE → major
+#      docs:, chore:, ci:, style:, test: → no release
+# 2. Merging that PR tags vX.Y.Z and creates a DRAFT GitHub Release.
+# 3. Every platform is built, tested and packaged in parallel.
+# 4. Only if all of them succeed: checksums + signed update manifest are
+#    uploaded, a smoke test runs, and the release is published.
+#
+# Secrets (signing is optional; unsigned builds work without them):
+#   TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD)  update signing key (required for auto-update)
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD  code signing (optional)
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID  macOS signing + notarisation (optional)
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build everything but don't publish
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    # Commits made by the release bot never trigger another release run.
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.author.name, 'github-actions')
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        if: github.event_name == 'push'
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows-latest, target: aarch64-pc-windows-msvc, cross: true }
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    env:
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag || github.ref }}
+      - uses: ./.github/actions/setup
+        with:
+          target: ${{ matrix.target }}
+      - name: Test (native targets)
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: make test TARGET=${{ matrix.target }}
+      - name: Windows code signing (optional)
+        if: runner.os == 'Windows' && env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          Import-PfxCertificate -FilePath cert.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force) | Out-Null
+          $thumb = (Get-PfxData -FilePath cert.pfx -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force)).EndEntityCertificates[0].Thumbprint
+          $conf = Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $conf.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $thumb -Force
+          $conf.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue "http://timestamp.digicert.com" -Force
+          $conf | ConvertTo-Json -Depth 20 | Set-Content app/src-tauri/tauri.conf.json
+          Remove-Item cert.pfx
+      - name: Build and package
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          case "${{ matrix.target }}" in
+            *windows*) BUNDLES=nsis ;;
+            *apple*) BUNDLES=app,dmg ;;
+            *) BUNDLES=appimage,deb,rpm ;;
+          esac
+          cd app && npx tauri build --target ${{ matrix.target }} --bundles $BUNDLES
+          cd .. && node scripts/collect-release.mjs ${{ matrix.target }}
+      - name: Smoke test the packaged app
+        if: runner.os == 'Linux' && !matrix.cross
+        shell: bash
+        run: |
+          mkdir -p smoke && tar -xzf release-assets/*.tar.gz -C smoke
+          sudo apt-get install -y xvfb
+          (xvfb-run -a timeout 20 ./smoke/alchemist/alchemist; echo "exit $?") | tee smoke.log
+          ! grep -q "panicked" smoke.log
+          test -d smoke/alchemist/data && echo "Portable data folder created."
+      - name: Smoke test the packaged app (Windows)
+        if: runner.os == 'Windows' && !matrix.cross
+        shell: pwsh
+        run: |
+          Expand-Archive (Get-Item release-assets/*-portable.zip).FullName smoke
+          $p = Start-Process smoke/Alchemist/Alchemist.exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "App exited during smoke test (code $($p.ExitCode))" }
+          if (-not (Test-Path smoke/Alchemist/data)) { throw "Portable data folder missing" }
+          Stop-Process $p
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: assets-*
+          merge-multiple: true
+      - name: Version
+        id: v
+        run: echo "version=$(node -p "require('./app/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "v${{ steps.v.outputs.version }}" --json body -q .body > notes.md 2>/dev/null || echo "Alchemist ${{ steps.v.outputs.version }}" > notes.md
+      - name: Checksums, update manifest, size check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/make-manifest.mjs release-assets "${{ steps.v.outputs.version }}" "${{ github.repository }}" notes.md
+          gh release download --pattern sizes.json --dir prev 2>/dev/null || true
+          node scripts/check-sizes.mjs release-assets/sizes.json prev/sizes.json 15
+      - name: Upload and publish
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.v.outputs.version }}"
+          gh release upload "$TAG" release-assets/* --clobber
+          gh release edit "$TAG" --draft=false --latest
+      - name: Dry-run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: ls -la release-assets >> "$GITHUB_STEP_SUMMARY"
