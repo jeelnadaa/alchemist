@@ -459,3 +459,20 @@
     ST.refresh();
   });
 })();
+
+
+/* Launch film: poster + play button; plays with sound and native controls. */
+(() => {
+  const video = document.getElementById("film-video");
+  const play = document.getElementById("film-play");
+  if (!video || !play) return;
+  const frame = video.closest(".film__frame");
+  play.addEventListener("click", () => {
+    video.controls = true;
+    frame.classList.add("is-playing");
+    video.play().catch(() => frame.classList.remove("is-playing"));
+  });
+  video.addEventListener("ended", () => { frame.classList.remove("is-playing"); video.controls = false; video.load(); });
+  // Pause when scrolled away so it never plays off-screen.
+  new IntersectionObserver((es) => es.forEach((e) => { if (!e.isIntersecting && !video.paused) video.pause(); }), { threshold: 0.2 }).observe(video);
+})();

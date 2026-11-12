@@ -73,7 +73,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
             <span class="btn-label" data-os-cta-label>Download Alchemist</span>
           </a>
-          <a class="btn btn--ghost" href="#transmute" data-magnetic>See what it does</a>
+          <a class="btn btn--ghost" href="#film" data-magnetic>Watch the film</a>
         </div>
         <p class="hero__meta mono"><span>Installer &amp; portable</span><span aria-hidden="true">·</span><span>No account</span><span aria-hidden="true">·</span><span>Auto-updates</span></p>
       </div>
@@ -144,6 +144,29 @@
         </div>
       </div>
     </section>
+
+    <!-- ============ FILM ============ -->
+    <section class="section film" id="film" aria-labelledby="film-title">
+      <div class="container">
+        <div class="film__head">
+          <span class="eyebrow">The film</span>
+          <h2 class="h2" id="film-title" data-split>Twenty-three seconds. <span class="serif grad-text">The whole studio.</span></h2>
+        </div>
+        <figure class="film__frame" data-reveal>
+          <div class="film__screen">
+            <video class="film__video" id="film-video" preload="none" playsinline poster="/assets/video/alchemist-launch.jpg" aria-label="Alchemist launch film, 23 seconds, with narration and subtitles">
+              <source src="/assets/video/alchemist-launch.mp4" type="video/mp4">
+            </video>
+            <button class="film__play" type="button" id="film-play" aria-label="Play the 23-second launch film with sound">
+              <span class="film__btn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z" fill="currentColor"/></svg>Watch the film</span>
+              <span class="film__len mono">0:23 · sound on</span>
+            </button>
+          </div>
+          <figcaption class="film__cap mono">Recorded, edited and shrunk in Alchemist's own UI. The narration has subtitles.</figcaption>
+        </figure>
+      </div>
+    </section>
+
 
     <!-- ============ FIVE TRANSMUTATIONS ============ -->
     <section class="transmute" id="transmute" aria-labelledby="transmute-title">

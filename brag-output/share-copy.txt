@@ -1,0 +1,1 @@
+Alchemist records your screen, cuts and captions it, and shrinks it to the exact size you need, all in one 23 MB app that opens in under a second. Free for Windows, macOS and Linux, and nothing leaves your computer: github.com/jeelnadaa/alchemist

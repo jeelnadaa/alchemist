@@ -10,3 +10,5 @@ release-assets/
 .claude/
 .wrangler/
 .wrangler-dry/
+brag-output/work/
+brag-output/*.mp4
