@@ -24,7 +24,7 @@ on:
       dry_run:
         description: Build everything but don't publish
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: release
@@ -38,9 +38,9 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      created: ${{ steps.rp.outputs.release_created }}
-      tag: ${{ steps.rp.outputs.tag_name }}
-      version: ${{ steps.rp.outputs.version }}
+      created: ${{ steps.rp.outputs.releases_created || steps.rp.outputs['app--release_created'] || steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs['app--tag_name'] || steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs['app--version'] || steps.rp.outputs.version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: rp
