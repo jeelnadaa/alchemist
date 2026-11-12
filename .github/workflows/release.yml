@@ -67,7 +67,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag || github.ref }}
+          # Drafts have no tag yet: build the exact commit this run is for.
+          ref: ${{ github.sha }}
       - uses: ./.github/actions/setup
         with:
           target: ${{ matrix.target }}
