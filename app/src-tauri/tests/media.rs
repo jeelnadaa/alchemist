@@ -776,3 +776,46 @@ fn real_screen_recording() {
         );
     }
 }
+
+/// Instant replay on the real screen: buffer, save the last 5 s, check the file.
+/// Needs a desktop session; run with `cargo test --test media -- --ignored`.
+#[test]
+#[ignore]
+fn real_instant_replay() {
+    if setup().is_none() {
+        return;
+    }
+    use alchemist_lib::replay;
+    let tmp = tempfile::tempdir().unwrap();
+    let opts = replay::ReplayOptions {
+        source: recorder::Source::Area {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 360,
+            screen_index: 0,
+        },
+        seconds: 5,
+        mic: false,
+        system_audio: true,
+        preset: recorder::Preset::Tutorial,
+    };
+    let r = replay::Replay::start(opts, tmp.path().join("buffer")).expect("replay starts");
+    // Too early is a clear message, not a broken file.
+    std::thread::sleep(Duration::from_millis(9000));
+    let out_dir = tmp.path().join("Replays");
+    let saved = r.save(&out_dir).expect("replay saves");
+    let saved2 = r.save(&out_dir).expect("second save");
+    assert_ne!(saved, saved2, "each save gets its own file");
+    r.stop();
+    assert!(saved.starts_with(&out_dir));
+    let name = saved.file_name().unwrap().to_string_lossy().to_string();
+    assert!(name.starts_with("Replay ") && name.ends_with(".mp4"), "{name}");
+    let info = ffmpeg::probe(&saved).unwrap();
+    eprintln!("replay {name}: {:.2} s, audio {}", info.duration, info.has_audio);
+    assert!(info.duration >= 4.8 && info.duration <= 8.5, "duration {}", info.duration);
+    assert_eq!((info.width, info.height), (640, 360));
+    assert!(info.has_audio);
+    // The rolling buffer is removed when replay stops.
+    assert!(!tmp.path().join("buffer").exists());
+}

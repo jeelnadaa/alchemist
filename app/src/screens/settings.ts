@@ -100,7 +100,9 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
         toggleRow("Camera bubble", null, s.recordCamera, (v) => store.set({ recordCamera: v })),
         toggleRow("Record keystrokes", "For keystroke overlays. Saved only on this computer.", s.recordKeys, (v) => store.set({ recordKeys: v }))),
       h("div", { class: "field" }, "Countdown", segmented("Countdown", [["0", "Off"], ["3", "3 seconds"], ["5", "5 seconds"]], String(s.countdown) as "0" | "3" | "5", (v) => store.set({ countdown: +v }))),
-      h("p", { class: "muted small" }, "Start and stop from anywhere with ", h("span", { class: "kbd" }, "Ctrl Shift R"), ". Recording runs in its own process and doesn't load the editor."));
+      h("p", { class: "muted small" }, "Start and stop from anywhere with ", h("span", { class: "kbd" }, "Ctrl Shift R"), ". Recording runs in its own process and doesn't load the editor."),
+      h("div", { class: "field", style: { marginTop: "12px" } }, "Instant replay buffer", segmented("Replay buffer", [["15", "15 s"], ["30", "30 s"], ["60", "1 min"], ["120", "2 min"]], String(s.replaySeconds || 30) as any, (v) => store.set({ replaySeconds: +v }))),
+      h("p", { class: "muted small" }, "Save the last replay buffer anytime with ", h("span", { class: "kbd" }, "Ctrl Shift S"), ". Saved into your Replays folder."));
   },
 
   async convert(el, rerender) {
@@ -189,7 +191,8 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
       h("div", { class: "setting-card", style: { padding: "16px 18px", gap: "12px" } },
         h("div", { class: "row" }, h("span", { class: "grow" }, h("strong", null, info.portable ? "Portable mode is on" : "Installed mode"), h("br"), h("span", { class: "muted small" }, info.portable ? "Everything is kept in the data folder next to Alchemist." : "Settings and projects live in your user folder.")), h("span", { class: "badge" }, info.portable ? "Portable" : "Installed")),
         h("div", { class: "row" }, h("span", { class: "grow mono small" }, info.dataDir), h("button", { type: "button", class: "btn", onclick: () => reveal(info.dataDir) }, "Show")),
-        h("div", { class: "row" }, h("span", { class: "grow small" }, "Recordings", h("br"), h("span", { class: "mono tiny muted" }, info.recordingsDir)), h("button", { type: "button", class: "btn", onclick: () => reveal(info.recordingsDir) }, "Show"))),
+        h("div", { class: "row" }, h("span", { class: "grow small" }, "Recordings", h("br"), h("span", { class: "mono tiny muted" }, info.recordingsDir)), h("button", { type: "button", class: "btn", onclick: () => reveal(info.recordingsDir) }, "Show")),
+        h("div", { class: "row" }, h("span", { class: "grow small" }, "Instant replays", h("br"), h("span", { class: "mono tiny muted" }, store.settings.replaysFolder || `${info.dataDir}/Replays`)), h("button", { type: "button", class: "btn", onclick: () => reveal(store.settings.replaysFolder || `${info.dataDir}/Replays`) }, "Show"))),
       h("p", { class: "muted small" }, "Original videos are never changed or moved. Projects only point at them."));
   },
 

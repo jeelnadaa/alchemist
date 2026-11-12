@@ -16,6 +16,7 @@ pub mod paths;
 pub mod project;
 pub mod quality;
 pub mod recorder;
+pub mod replay;
 pub mod settings;
 
 use parking_lot::Mutex;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub data: paths::DataLocation,
     pub queue: Arc<jobs::Queue>,
     pub recorder: Arc<recorder::Recorder>,
+    pub replay: Arc<Mutex<Option<replay::Replay>>>,
     pub settings: Arc<Mutex<settings::Settings>>,
     pub font: PathBuf,
     pub recovered: Mutex<Vec<recorder::Manifest>>,
@@ -179,7 +181,7 @@ fn jobs_clear(state: tauri::State<'_, AppState>) {
 
 #[tauri::command]
 fn is_busy(state: tauri::State<'_, AppState>) -> bool {
-    state.queue.is_busy() || state.recorder.is_recording()
+    state.queue.is_busy() || state.recorder.is_recording() || state.replay.lock().is_some()
 }
 
 // ------------------------------------------------------------------ recorder
@@ -321,6 +323,80 @@ fn area_picked(app: AppHandle, area: Option<serde_json::Value>) {
         let _ = w.destroy();
     }
     let _ = app.emit("area-picked", area);
+}
+
+// ------------------------------------------------------------------ replay
+
+#[tauri::command]
+async fn replay_start(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    opts: replay::ReplayOptions,
+) -> Res<replay::ReplayStatus> {
+    let buf_dir = state.data.root.join("replay-buffer");
+    let rep_state = state.replay.clone();
+    let r = blocking(move || replay::Replay::start(opts, buf_dir)).await?;
+    let status = r.status();
+    *rep_state.lock() = Some(r);
+    let _ = app.emit("replay", "started");
+    Ok(status)
+}
+
+#[tauri::command]
+async fn replay_stop(app: AppHandle, state: tauri::State<'_, AppState>) -> Res<()> {
+    let rep = state.replay.lock().take();
+    if let Some(r) = rep {
+        blocking(move || {
+            r.stop();
+            Ok(())
+        })
+        .await?;
+        let _ = app.emit("replay", "stopped");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn replay_save(app: AppHandle, state: tauri::State<'_, AppState>) -> Res<String> {
+    let rep_arc = state.replay.clone();
+    let out_dir = {
+        let s = state.settings.lock();
+        replay::replays_dir(s.replays_folder.as_deref(), &state.data.root, state.data.portable)
+    };
+    let app2 = app.clone();
+    let saved = blocking(move || {
+        let lock = rep_arc.lock();
+        let Some(r) = lock.as_ref() else {
+            return Err("Instant replay is not running.".into());
+        };
+        r.save(&out_dir)
+    })
+    .await?;
+    let path = saved.to_string_lossy().to_string();
+    let _ = app2.emit("replay-saved", &path);
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app2
+            .notification()
+            .builder()
+            .title("Instant Replay Saved")
+            .body(&format!(
+                "Saved to {}",
+                saved.file_name().unwrap_or_default().to_string_lossy()
+            ))
+            .show();
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn replay_status(state: tauri::State<'_, AppState>) -> replay::ReplayStatus {
+    if let Some(r) = state.replay.lock().as_ref() {
+        r.status()
+    } else {
+        replay::ReplayStatus::default()
+    }
 }
 
 fn show_bar(app: &AppHandle) {
@@ -833,6 +909,48 @@ fn toggle_recording(app: &AppHandle) {
     }
 }
 
+fn save_replay_action(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let rep_arc = state.replay.clone();
+    let out_dir = {
+        let s = state.settings.lock();
+        replay::replays_dir(s.replays_folder.as_deref(), &state.data.root, state.data.portable)
+    };
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let res = {
+            let lock = rep_arc.lock();
+            let Some(r) = lock.as_ref() else {
+                return;
+            };
+            r.save(&out_dir)
+        };
+        match res {
+            Ok(p) => {
+                let s = p.to_string_lossy().to_string();
+                let _ = app2.emit("replay-saved", &s);
+                #[cfg(desktop)]
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app2
+                        .notification()
+                        .builder()
+                        .title("Instant Replay Saved")
+                        .body(&format!(
+                            "Saved to {}",
+                            p.file_name().unwrap_or_default().to_string_lossy()
+                        ))
+                        .show();
+                }
+            }
+            Err(e) => {
+                log::warn!("save replay error: {e}");
+                let _ = app2.emit("replay-error", &e);
+            }
+        }
+    });
+}
+
 fn install_crash_hook(dir: PathBuf) {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -862,12 +980,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        toggle_recording(app);
+                        let sc_str = format!("{shortcut:?}");
+                        if sc_str.contains("KeyS") || sc_str.contains('S') {
+                            save_replay_action(app);
+                        } else {
+                            toggle_recording(app);
+                        }
                     }
                 })
                 .build(),
@@ -886,11 +1010,13 @@ pub fn run() {
                 let _ = emitter.emit("job", job);
             }));
             let recorder = Arc::new(recorder::Recorder::new(data.recordings_dir()));
+            let replay: Arc<Mutex<Option<replay::Replay>>> = Arc::new(Mutex::new(None));
             let finished: Arc<Mutex<Option<recorder::Manifest>>> = Arc::new(Mutex::new(None));
             app.manage(AppState {
                 data: data.clone(),
                 queue,
                 recorder: recorder.clone(),
+                replay: replay.clone(),
                 settings: settings.clone(),
                 font,
                 recovered: Mutex::new(recovered),
@@ -901,6 +1027,9 @@ pub fn run() {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 if let Err(e) = app.global_shortcut().register("CommandOrControl+Shift+R") {
                     log::warn!("global shortcut unavailable: {e}");
+                }
+                if let Err(e) = app.global_shortcut().register("CommandOrControl+Shift+S") {
+                    log::warn!("replay shortcut unavailable: {e}");
                 }
             }
 
@@ -915,8 +1044,15 @@ pub fn run() {
                 true,
                 Some("CommandOrControl+Shift+R"),
             )?;
+            let rep = MenuItem::with_id(
+                app,
+                "replay",
+                "Save instant replay",
+                true,
+                Some("CommandOrControl+Shift+S"),
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &rec, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &rec, &rep, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main")
                 .tooltip("Alchemist")
                 .menu(&menu)
@@ -927,6 +1063,7 @@ pub fn run() {
             tray.on_menu_event(|app, e| match e.id.as_ref() {
                 "open" => ensure_main(app),
                 "record" => toggle_recording(app),
+                "replay" => save_replay_action(app),
                 "quit" => app.exit(0),
                 _ => {}
             })
@@ -997,6 +1134,10 @@ pub fn run() {
             record_stop,
             recording_ui_done,
             take_finished_recording,
+            replay_start,
+            replay_stop,
+            replay_save,
+            replay_status,
             record_pause,
             record_resume,
             record_cancel,

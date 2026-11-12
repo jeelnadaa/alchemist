@@ -13,6 +13,7 @@ const store = {
   history: {} as Record<string, unknown>,
   jobs: [] as Job[],
   recording: null as null | { started: number; paused: boolean; pausedAt: number; pausedTotal: number },
+  replay: null as null | { started: number; seconds: number },
 };
 
 function loadLocal<T>(key: string, fallback: T): T {
@@ -178,6 +179,27 @@ export async function mockInvoke(cmd: string, a: Record<string, any>, emit: Emit
     }
     case "take_finished_recording":
       return null;
+    case "replay_start":
+      store.replay = { started: Date.now(), seconds: a.opts?.seconds || 30 };
+      emit("replay", "started");
+      return { running: true, seconds: store.replay.seconds, buffered: 0, notes: [] };
+    case "replay_stop":
+      store.replay = null;
+      emit("replay", "stopped");
+      return null;
+    case "replay_save": {
+      const savePath = "C:/Users/you/Videos/Alchemist/Replays/Replay-Saved.mp4";
+      emit("replay-saved", savePath);
+      return savePath;
+    }
+    case "replay_status":
+      if (!store.replay) return { running: false, seconds: 30, buffered: 0, notes: [] };
+      return {
+        running: true,
+        seconds: store.replay.seconds,
+        buffered: Math.min(store.replay.seconds, (Date.now() - store.replay.started) / 1000),
+        notes: [],
+      };
     case "recording_ui_done":
       return null;
     case "record_cancel":

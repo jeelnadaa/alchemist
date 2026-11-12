@@ -24,6 +24,8 @@ export type Source =
   | { kind: "window"; title: string }
   | { kind: "area"; x: number; y: number; width: number; height: number; screenIndex: number };
 export interface RecordOptions { source: Source; mic: boolean; systemAudio: boolean; camera: boolean; preset: "tutorial" | "high" | "tiny"; video?: { width: number; height: number; fps: number } | null; recordKeys: boolean; autoStopSeconds?: number | null; autoStopMb?: number | null; separateCursor?: boolean }
+export interface ReplayOptions { source: Source; seconds: number; mic: boolean; systemAudio: boolean; preset: "tutorial" | "high" | "tiny" }
+export interface ReplayStatus { running: boolean; seconds: number; buffered: number; notes: string[] }
 export interface Manifest { id: string; startedUnix: number; state: string; fps: number; segments: string[]; video?: string | null; mic?: string | null; systemAudio?: string | null; camera?: string | null; events?: string | null; duration: number; droppedFrames: number; bytes: number; encoder: string; notes: string[] }
 export interface RecordStatus { recording: boolean; paused: boolean; seconds: number; bytes: number; droppedFrames: number; freeBytes?: number | null; warning?: string | null; micLevel: number }
 
@@ -49,6 +51,7 @@ export interface Settings {
   theme: string; darkTheme: string; lightTheme: string; followSystem: boolean; accent: string | null; textSize: string; reduceMotion: boolean;
   updateMode: "auto" | "notify" | "off"; betaChannel: boolean; lastUpdateCheck: number; useHardware: boolean;
   recordPreset: "tutorial" | "high" | "tiny"; recordMic: boolean; recordSystemAudio: boolean; recordCamera: boolean; recordKeys: boolean; recordSmoothCursor: boolean; countdown: number;
+  replaySeconds: number; replayHotkey: string; replaysFolder: string | null;
   defaultTargetMb: number; saveNextToOriginal: boolean; exportFolder: string | null; shortcutPreset: string; shortcuts: Record<string, string>; firstRunDone: boolean;
   [k: string]: unknown;
 }
@@ -56,7 +59,9 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   theme: "obsidian", darkTheme: "obsidian", lightTheme: "salt", followSystem: false, accent: null, textSize: "default", reduceMotion: false,
   updateMode: "auto", betaChannel: false, lastUpdateCheck: 0, useHardware: true, recordPreset: "tutorial", recordMic: true, recordSystemAudio: true,
-  recordCamera: false, recordKeys: false, recordSmoothCursor: true, countdown: 3, defaultTargetMb: 25, saveNextToOriginal: true, exportFolder: null, shortcutPreset: "alchemist", shortcuts: {}, firstRunDone: false,
+  recordCamera: false, recordKeys: false, recordSmoothCursor: true, countdown: 3,
+  replaySeconds: 30, replayHotkey: "CommandOrControl+Shift+S", replaysFolder: null,
+  defaultTargetMb: 25, saveNextToOriginal: true, exportFolder: null, shortcutPreset: "alchemist", shortcuts: {}, firstRunDone: false,
 };
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

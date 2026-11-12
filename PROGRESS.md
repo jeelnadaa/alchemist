@@ -118,7 +118,7 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 ## Phase 3 — Depth and mastery
 - 🟡 Enhance: denoise, sharpen, stabilise, 2× upscale (high-quality scaling, not AI), deinterlace, HDR→SDR, before/after preview. ⬜ AI upscaling, frame interpolation, batch enhance presets
 - ⬜ Keyframes, colour tools/LUTs, chroma key, slip/slide/roll, nested sequences, multicam
-- ⬜ Watch folders, pipelines, instant replay, scheduled recording, command-line interface
+- 🟡 Instant replay (rolling buffer, hotkey, Replays folder) done; ⬜ watch folders, pipelines, scheduled recording, command-line interface
 - ⬜ Opt-in connected features, interchange formats
 - 🟡 Polish: first-run guide and empty states done; ⬜ localisation, public benchmark page
 

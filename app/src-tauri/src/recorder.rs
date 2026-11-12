@@ -430,7 +430,78 @@ pub fn segment_args(
 
 // ---------------------------------------------------------------- audio tracks
 
-struct AudioTrack {
+/// The last few minutes of sound kept in memory (for instant replay), stamped
+/// with wall-clock time so it can be lined up with the video buffer.
+#[derive(Default)]
+pub struct Ring {
+    pub channels: u16,
+    pub rate: u32,
+    pub buf: std::collections::VecDeque<i16>,
+    /// Wall-clock time at the end of the last sample.
+    pub end_wall: f64,
+    /// Seconds to keep.
+    pub keep: f64,
+}
+
+impl Ring {
+    pub fn new(keep: f64) -> Self {
+        Ring {
+            keep,
+            ..Default::default()
+        }
+    }
+
+    fn frames_per_sec(&self) -> f64 {
+        self.rate.max(1) as f64
+    }
+
+    /// Append a buffer captured at `start` (wall clock); silence fills any gap.
+    pub fn push(&mut self, start: f64, samples: &[i16]) {
+        let ch = self.channels.max(1) as usize;
+        let len = (samples.len() / ch) as f64 / self.frames_per_sec();
+        if self.end_wall <= 0.0 || start - self.end_wall > 5.0 {
+            if !self.buf.is_empty() && start - self.end_wall > 5.0 {
+                // A long silence: the old audio is too far back to matter.
+                self.buf.clear();
+            }
+            self.end_wall = start;
+        } else if start - self.end_wall > 0.03 {
+            let frames = ((start - self.end_wall) * self.frames_per_sec()).round() as usize;
+            self.buf.extend(std::iter::repeat_n(0i16, frames * ch));
+            self.end_wall = start;
+        }
+        self.buf.extend(samples.iter().copied());
+        self.end_wall += len;
+        let max = (self.keep * self.frames_per_sec()) as usize * ch;
+        while self.buf.len() > max {
+            let drop = (self.buf.len() - max).div_ceil(ch) * ch;
+            self.buf.drain(..drop.min(self.buf.len()));
+        }
+    }
+
+    /// Samples covering wall-clock [w0, w1], silent where nothing was captured.
+    pub fn extract(&self, w0: f64, w1: f64) -> Vec<i16> {
+        let ch = self.channels.max(1) as usize;
+        let rate = self.frames_per_sec();
+        let frames = ((w1 - w0).max(0.0) * rate).round() as usize;
+        let have = self.buf.len() / ch;
+        let start_wall = self.end_wall - have as f64 / rate;
+        let off = ((w0 - start_wall) * rate).round() as i64;
+        let mut out = vec![0i16; frames * ch];
+        for k in 0..frames {
+            let src = off + k as i64;
+            if src >= 0 && (src as usize) < have {
+                let i = src as usize * ch;
+                for c in 0..ch {
+                    out[k * ch + c] = self.buf[i + c];
+                }
+            }
+        }
+        out
+    }
+}
+
+pub struct AudioTrack {
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     level: Arc<AtomicU64>,
@@ -441,6 +512,19 @@ struct AudioTrack {
 impl AudioTrack {
     /// Start capturing `device_kind` ("mic" or "system") into a WAV file.
     fn start(kind: &'static str, path: PathBuf) -> Result<AudioTrack, String> {
+        Self::start_into(kind, Some(path), None)
+    }
+
+    /// Capture into memory instead (instant replay).
+    pub fn start_ring(kind: &'static str, ring: Arc<Mutex<Ring>>) -> Result<AudioTrack, String> {
+        Self::start_into(kind, None, Some(ring))
+    }
+
+    fn start_into(
+        kind: &'static str,
+        path: Option<PathBuf>,
+        ring: Option<Arc<Mutex<Ring>>>,
+    ) -> Result<AudioTrack, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let level = Arc::new(AtomicU64::new(0));
@@ -499,12 +583,20 @@ impl AudioTrack {
                     bits_per_sample: 16,
                     sample_format: hound::SampleFormat::Int,
                 };
-                let writer = match hound::WavWriter::create(&path, spec) {
-                    Ok(w) => Arc::new(Mutex::new(Some(w))),
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e.to_string()));
-                        return;
-                    }
+                if let Some(r) = &ring {
+                    let mut r = r.lock();
+                    r.channels = spec.channels;
+                    r.rate = spec.sample_rate;
+                }
+                let writer = match &path {
+                    None => Arc::new(Mutex::new(None)),
+                    Some(path) => match hound::WavWriter::create(path, spec) {
+                        Ok(w) => Arc::new(Mutex::new(Some(w))),
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(e.to_string()));
+                            return;
+                        }
+                    },
                 };
                 let w2 = writer.clone();
                 let (pa2, lv2) = (pa.clone(), lv.clone());
@@ -523,6 +615,12 @@ impl AudioTrack {
                     let now = wall_now();
                     // This buffer was captured just before the callback ran.
                     let buf_start = now - buf.len() as f64 / channels / rate;
+                    if let Some(r) = &ring {
+                        let peak = buf.iter().map(|v| (*v as i32).abs()).max().unwrap_or(0);
+                        r.lock().push(buf_start, &buf);
+                        lv2.store(peak as u64, Ordering::Relaxed);
+                        return;
+                    }
                     let Some(mut guard) = w2.try_lock_for(Duration::from_millis(50)) else {
                         return;
                     };
@@ -637,7 +735,7 @@ impl AudioTrack {
         }
     }
 
-    fn finish(mut self) {
+    pub fn finish(mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -724,7 +822,7 @@ impl Segment {
     }
 }
 
-fn watch_start(line: &str, slot: &Mutex<Option<f64>>) {
+pub fn watch_start(line: &str, slot: &Mutex<Option<f64>>) {
     if slot.lock().is_some() {
         return;
     }
@@ -1719,6 +1817,26 @@ mod tests {
             .0
             .join(" ");
         assert!(j.contains("-framerate 240") && j.contains("scale=7680:72"));
+    }
+
+    #[test]
+    fn replay_ring_keeps_time_and_fills_silence() {
+        let mut r = Ring::new(2.0);
+        r.channels = 1;
+        r.rate = 10;
+        r.push(100.0, &[1; 10]); // 100.0 - 101.0
+        r.push(101.5, &[2; 5]); // gap of 0.5 s, then 101.5 - 102.0
+        assert!((r.end_wall - 102.0).abs() < 1e-9);
+        let x = r.extract(100.5, 102.5);
+        assert_eq!(x.len(), 20);
+        assert_eq!(&x[..5], &[1; 5]);
+        assert_eq!(&x[5..10], &[0; 5]);
+        assert_eq!(&x[10..15], &[2; 5]);
+        assert_eq!(&x[15..], &[0; 5]);
+        // Only the last 2 s are kept.
+        r.push(102.0, &[3; 20]);
+        assert_eq!(r.buf.len(), 20);
+        assert_eq!(r.extract(101.9, 102.0), vec![0]);
     }
 
     #[test]
