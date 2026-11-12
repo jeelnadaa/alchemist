@@ -10,7 +10,7 @@ import { openPalette, rememberFile } from "../ui/palette";
 
 export async function mount(shell: Shell) {
   const action = (route: string, title: string, sub: string, keys: string, ic: Parameters<typeof icon>[0], tint: string, run?: () => void) =>
-    h("a", { href: `#/${route}`, class: "action", "data-tooltip": `${title} (${keys})`, "data-tooltip-pos": "top", onclick: run ? (e: Event) => { e.preventDefault(); run(); } : undefined },
+    h("a", { href: `#/${route}`, class: "action", onclick: run ? (e: Event) => { e.preventDefault(); run(); } : undefined },
       h("div", { class: "row", style: { justifyContent: "space-between", width: "100%", alignItems: "flex-start" } },
         h("span", { class: "ic", style: { background: `color-mix(in srgb, ${tint} 16%, transparent)`, color: tint } }, icon(ic, 22)),
         h("span", { class: "kbd" }, keys)),

@@ -60,7 +60,7 @@ jobs:
         include:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, family: windows }
           - { os: macos-latest, target: aarch64-apple-darwin, family: macos }
-          - { os: macos-13, target: x86_64-apple-darwin, family: macos }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, family: macos }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, family: linux }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, family: linux }
     runs-on: ${{ matrix.os }}

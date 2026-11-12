@@ -60,7 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "obsidian", darkTheme: "obsidian", lightTheme: "salt", followSystem: false, accent: null, textSize: "default", reduceMotion: false,
   updateMode: "auto", betaChannel: false, lastUpdateCheck: 0, useHardware: true, recordPreset: "tutorial", recordMic: true, recordSystemAudio: true,
   recordCamera: false, recordKeys: false, recordSmoothCursor: true, countdown: 3,
-  replaySeconds: 30, replayHotkey: "CommandOrControl+Shift+S", replaysFolder: null,
+  replaySeconds: 30, replayHotkey: "CommandOrControl+Alt+R", replaysFolder: null,
   defaultTargetMb: 25, saveNextToOriginal: true, exportFolder: null, shortcutPreset: "alchemist", shortcuts: {}, firstRunDone: false,
 };
 

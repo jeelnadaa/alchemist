@@ -9,6 +9,19 @@ import { store } from "../store";
 import { ACCENTS, parseCustomTheme, THEMES, themeById, type Theme } from "../themes";
 import { errorText, segmented, toast, toggleRow } from "../ui/common";
 import { checkNow, confirmBeta, RELEASES } from "../updater";
+import { REPLAY_HOTKEYS } from "../ui/replay";
+
+/** Where replays go, with Show and Change. Separate from recordings and exports. */
+async function replayFolderRow(): Promise<HTMLElement> {
+  const dir = await call<string>("replays_dir").catch(() => store.settings.replaysFolder || "Videos/Alchemist/Replays");
+  return h("div", { class: "row" },
+    h("span", { class: "grow small" }, "Instant replays", h("br"), h("span", { class: "mono tiny muted" }, dir)),
+    h("button", { type: "button", class: "btn", onclick: () => reveal(dir) }, "Show"),
+    h("button", { type: "button", class: "btn", onclick: async () => {
+      const picked = await pickFolder();
+      if (picked) { await store.set({ replaysFolder: picked }); location.reload(); }
+    } }, "Change"));
+}
 
 const SECTIONS: [string, string, string][] = [
   ["appearance", "Appearance", "theme dark light color accent text size motion"],
@@ -89,7 +102,7 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
       h("div", { class: "setting-card" }, toggleRow("Reduce motion", "Turns off animations. Alchemist also follows your system setting.", s.reduceMotion, (v) => store.set({ reduceMotion: v }))));
   },
 
-  recording(el) {
+  async recording(el) {
     const s = store.settings;
     el.append(
       h("h1", null, "Recording"),
@@ -101,8 +114,15 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
         toggleRow("Record keystrokes", "For keystroke overlays. Saved only on this computer.", s.recordKeys, (v) => store.set({ recordKeys: v }))),
       h("div", { class: "field" }, "Countdown", segmented("Countdown", [["0", "Off"], ["3", "3 seconds"], ["5", "5 seconds"]], String(s.countdown) as "0" | "3" | "5", (v) => store.set({ countdown: +v }))),
       h("p", { class: "muted small" }, "Start and stop from anywhere with ", h("span", { class: "kbd" }, "Ctrl Shift R"), ". Supports high-refresh gaming and custom frame rates up to 240 fps (120, 144, 240 fps) in recording options."),
-      h("div", { class: "field", style: { marginTop: "12px" } }, "Instant replay buffer", segmented("Replay buffer", [["15", "15 s"], ["30", "30 s"], ["60", "1 min"], ["120", "2 min"]], String(s.replaySeconds || 30) as any, (v) => store.set({ replaySeconds: +v }))),
-      h("p", { class: "muted small" }, "Save the last replay buffer anytime with ", h("span", { class: "kbd" }, "Ctrl Shift S"), ". Saved into your Replays folder."));
+      h("h2", { style: { marginTop: "18px" } }, "Instant replay"),
+      h("div", { class: "field" }, "Keep the last", segmented("Replay length", [["15", "15 s"], ["30", "30 s"], ["60", "1 min"], ["120", "2 min"], ["300", "5 min"]], String(s.replaySeconds || 30) as "30", (v) => store.set({ replaySeconds: +v }))),
+      h("div", { class: "field" }, "Save hotkey", segmented("Replay hotkey", REPLAY_HOTKEYS, (REPLAY_HOTKEYS.some(([k]) => k === s.replayHotkey) ? s.replayHotkey : REPLAY_HOTKEYS[0][0]) as string, async (v) => {
+        await store.set({ replayHotkey: v });
+        const st = await call<{ running: boolean; notes: string[] }>("replay_status").catch(() => null);
+        for (const n of st?.notes ?? []) toast(n, { error: true });
+      })),
+      h("p", { class: "muted small" }, "The hotkey only works while instant replay is on, so it never gets in the way of other apps. Length changes apply the next time you turn it on."),
+      await replayFolderRow());
   },
 
   async convert(el, rerender) {
@@ -192,7 +212,7 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
         h("div", { class: "row" }, h("span", { class: "grow" }, h("strong", null, info.portable ? "Portable mode is on" : "Installed mode"), h("br"), h("span", { class: "muted small" }, info.portable ? "Everything is kept in the data folder next to Alchemist." : "Settings and projects live in your user folder.")), h("span", { class: "badge" }, info.portable ? "Portable" : "Installed")),
         h("div", { class: "row" }, h("span", { class: "grow mono small" }, info.dataDir), h("button", { type: "button", class: "btn", onclick: () => reveal(info.dataDir) }, "Show")),
         h("div", { class: "row" }, h("span", { class: "grow small" }, "Recordings", h("br"), h("span", { class: "mono tiny muted" }, info.recordingsDir)), h("button", { type: "button", class: "btn", onclick: () => reveal(info.recordingsDir) }, "Show")),
-        h("div", { class: "row" }, h("span", { class: "grow small" }, "Instant replays", h("br"), h("span", { class: "mono tiny muted" }, store.settings.replaysFolder || `${info.dataDir}/Replays`)), h("button", { type: "button", class: "btn", onclick: () => reveal(store.settings.replaysFolder || `${info.dataDir}/Replays`) }, "Show"))),
+        await replayFolderRow()),
       h("p", { class: "muted small" }, "Original videos are never changed or moved. Projects only point at them."));
   },
 

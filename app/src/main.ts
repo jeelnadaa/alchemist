@@ -9,6 +9,7 @@ import { buildShell, type Shell } from "./shell";
 import { store } from "./store";
 import { errorText, toast } from "./ui/common";
 import { openPalette } from "./ui/palette";
+import { listenForReplays, saveReplay } from "./ui/replay";
 
 type Cleanup = (() => void) | void;
 type Screen = { mount: (shell: Shell, route: Route) => Cleanup | Promise<Cleanup> };
@@ -90,11 +91,7 @@ async function boot() {
     else if (act === "newEdit") { request("new-edit"); go("edit/new"); }
     else if (act === "convert") go("convert");
     else if (act === "settings") go("settings/appearance");
-    else if (act === "replaySave") {
-      call<string>("replay_save")
-        .then((p) => toast(`Instant replay saved: ${p.split(/[\\/]/).pop()}`))
-        .catch((err) => toast(errorText(err), { error: true }));
-    }
+    else if (act === "replaySave") saveReplay();
   });
 
   // Global hotkey from anywhere in the OS.
@@ -105,9 +102,7 @@ async function boot() {
     }
   });
 
-  await on<string>("replay-saved", (path) => {
-    toast(`Instant replay saved: ${path.split(/[\\/]/).pop()}`);
-  });
+  await listenForReplays();
   // A recording just finished (from the bar, the hotkey or auto-stop): open it.
   const openFinished = async () => {
     const m = await call<Manifest | null>("take_finished_recording").catch(() => null);

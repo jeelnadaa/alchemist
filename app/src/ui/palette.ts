@@ -5,7 +5,8 @@ import { clear, h, icon } from "../dom";
 import { fileName } from "../format";
 import { go, request } from "../router";
 import { rank, type Entry } from "../search";
-import { modal, toast } from "./common";
+import { modal } from "./common";
+import { replayKeys, saveReplay } from "./replay";
 
 let open = false;
 
@@ -32,11 +33,7 @@ function staticEntries(): Entry[] {
   const help = (title: string, sub: string, keywords: string, run: () => void): Entry => ({ id: `h-${title}`, group: "Help", title, sub, keywords, hint: "Guide", run });
   return [
     a("record", "Record screen", "Full screen, a window or an area", "record capture screen window area start video", "Ctrl Shift R", () => go("record")),
-    a("replay-save", "Save instant replay", "Save the buffered replay to your Replays folder", "replay instant buffer clip shadowplay save last moments", "Ctrl Shift S", () => {
-      call<string>("replay_save")
-        .then((p) => toast(`Instant replay saved: ${p.split(/[\\/]/).pop()}`))
-        .catch((e) => toast(e?.message || String(e), { error: true }));
-    }),
+    a("replay-save", "Save instant replay", "Save the buffered replay to your Replays folder", "replay instant buffer clip shadowplay save last moments", replayKeys(), () => { saveReplay(); }),
     a("record-window", "Record a window", "Capture just one app", "record window app", "Record", () => { request("record-source", "window"); go("record"); }),
     a("record-area", "Record an area", "Drag a box around what to capture", "record area region part", "Record", () => { request("record-source", "area"); go("record"); }),
     a("shrink", "Shrink a video to a target size", "Pick 10, 25 or 50 MB, or any size", "small smaller compress shrink size mb target reduce email", "Convert", () => { request("convert-goal", "smaller"); go("convert"); }),

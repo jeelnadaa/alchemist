@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,16 +45,20 @@ pub struct ReplayStatus {
     pub notes: Vec<String>,
 }
 
+/// A running buffer. Shared (`Arc<Replay>`) so a save can run without
+/// blocking status checks; `stop` can be called from anywhere, once or more.
 pub struct Replay {
-    child: Child,
-    stdin: Option<ChildStdin>,
+    child: Mutex<Child>,
+    stdin: Mutex<Option<ChildStdin>>,
     dir: PathBuf,
     pub opts: ReplayOptions,
     spawned: f64,
     reported: Arc<Mutex<Option<f64>>>,
-    tracks: Vec<(AudioTrack, Arc<Mutex<Ring>>)>,
+    tracks: Mutex<Vec<AudioTrack>>,
+    rings: Vec<Arc<Mutex<Ring>>>,
     started: Instant,
     notes: Vec<String>,
+    stopped: AtomicBool,
     /// One save at a time.
     saving: Mutex<()>,
 }
@@ -166,14 +171,26 @@ pub fn read_pieces(csv: &str, wrap: u32, now_rel: f64) -> Vec<Piece> {
     out
 }
 
-/// The pieces that cover the last `seconds` (whole pieces, oldest first).
-pub fn pick(pieces: &[Piece], now_rel: f64, seconds: f64) -> Vec<Piece> {
-    let from = now_rel - seconds;
-    let mut keep: Vec<Piece> = pieces.iter().filter(|p| p.end > from).cloned().collect();
-    // Never include a file name twice (the wrap reuses names).
+/// Newest pieces first until they add up to `seconds`, returned oldest first.
+/// `usable` says whether a piece could be read (the one still being written
+/// sometimes can't); unusable pieces are skipped and older ones fill in.
+pub fn pick(pieces: &[Piece], seconds: f64, mut usable: impl FnMut(&Piece) -> bool) -> Vec<Piece> {
+    let mut out: Vec<Piece> = Vec::new();
+    let mut total = 0.0;
     let mut seen = std::collections::HashSet::new();
-    keep.retain(|p| seen.insert(p.file.clone()));
-    keep
+    for p in pieces.iter().rev() {
+        if total >= seconds - 0.05 {
+            break;
+        }
+        // The wrap reuses names: an old entry with a name already taken is gone.
+        if !seen.insert(p.file.clone()) || !usable(p) {
+            continue;
+        }
+        total += p.end - p.start;
+        out.push(p.clone());
+    }
+    out.reverse();
+    out
 }
 
 /// Where replays are saved: the chosen folder, else Videos/Alchemist/Replays.
@@ -205,28 +222,53 @@ impl Replay {
         // Sound first, so the first seconds have it.
         let keep = opts.seconds as f64 + 2.0 * PIECE + 5.0;
         let mut tracks = Vec::new();
+        let mut rings = Vec::new();
         for (on, kind) in [(opts.mic, "mic"), (opts.system_audio, "system")] {
             if !on {
                 continue;
             }
             let ring = Arc::new(Mutex::new(Ring::new(keep)));
             match AudioTrack::start_ring(kind, ring.clone()) {
-                Ok(t) => tracks.push((t, ring)),
+                Ok(t) => {
+                    tracks.push(t);
+                    rings.push(ring);
+                }
                 Err(e) => notes.push(e),
             }
         }
-        let caps = ffmpeg::capture_capabilities().map_err(|e| e.to_string())?;
-        let args = buffer_args(&opts, &caps, &buffer_dir, recorder::current_os())?;
-        let bin = ffmpeg::locate_capture().map_err(|e| e.to_string())?;
+        let finish_all = |tracks: Vec<AudioTrack>| {
+            for t in tracks {
+                t.finish();
+            }
+        };
+        let prepared = (|| -> Result<(Vec<String>, PathBuf), String> {
+            let caps = ffmpeg::capture_capabilities().map_err(|e| e.to_string())?;
+            let args = buffer_args(&opts, &caps, &buffer_dir, recorder::current_os())?;
+            let bin = ffmpeg::locate_capture().map_err(|e| e.to_string())?;
+            Ok((args, bin))
+        })();
+        let (args, bin) = match prepared {
+            Ok(v) => v,
+            Err(e) => {
+                finish_all(tracks);
+                return Err(e);
+            }
+        };
         let spawned = wall_now();
-        let mut child = ffmpeg::command(&bin)
+        let mut child = match ffmpeg::command(&bin)
             .args(["-y", "-loglevel", "info"])
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                finish_all(tracks);
+                return Err(e.to_string());
+            }
+        };
         let stdin = child.stdin.take();
         let reported = Arc::new(Mutex::new(None));
         if let Some(err) = child.stderr.take() {
@@ -242,14 +284,12 @@ impl Replay {
                         }
                     }
                 })
-                .map_err(|e| e.to_string())?;
+                .ok();
         }
         let deadline = Instant::now() + Duration::from_millis(2000);
         loop {
             if let Ok(Some(status)) = child.try_wait() {
-                for (t, _) in tracks {
-                    t.finish();
-                }
+                finish_all(tracks);
                 return Err(format!(
                     "Instant replay couldn't start screen capture (code {}).",
                     status.code().unwrap_or(-1)
@@ -262,15 +302,17 @@ impl Replay {
         }
         log::info!("instant replay buffering {} s", opts.seconds);
         Ok(Replay {
-            child,
-            stdin,
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
             dir: buffer_dir,
             opts,
             spawned,
             reported,
-            tracks,
+            tracks: Mutex::new(tracks),
+            rings,
             started: Instant::now(),
             notes,
+            stopped: AtomicBool::new(false),
             saving: Mutex::new(()),
         })
     }
@@ -284,56 +326,62 @@ impl Replay {
     }
 
     pub fn status(&self) -> ReplayStatus {
+        let alive = self.is_alive();
+        let mut notes = self.notes.clone();
+        if !alive && !self.stopped.load(Ordering::Relaxed) {
+            notes.push(
+                "Screen capture for instant replay stopped unexpectedly. Turn it off and on again."
+                    .into(),
+            );
+        }
         ReplayStatus {
-            running: true,
+            running: alive,
             seconds: self.opts.seconds,
             buffered: self
                 .started
                 .elapsed()
                 .as_secs_f64()
                 .min(self.opts.seconds as f64),
-            notes: self.notes.clone(),
+            notes,
         }
     }
 
-    pub fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+    /// The capture process is still running.
+    pub fn is_alive(&self) -> bool {
+        !self.stopped.load(Ordering::Relaxed) && matches!(self.child.lock().try_wait(), Ok(None))
     }
 
     /// Save the last `seconds` into `out_dir`. Returns the saved file.
     pub fn save(&self, out_dir: &Path) -> Result<PathBuf, String> {
+        if !self.is_alive() {
+            return Err("Instant replay isn't running.".into());
+        }
         let _one = self.saving.lock();
         let now = wall_now();
         let first = self.first_frame();
         let wrap = pieces_for(self.opts.seconds);
         let csv = std::fs::read_to_string(self.dir.join("pieces.csv")).unwrap_or_default();
         let pieces = read_pieces(&csv, wrap, now - first);
-        let chosen = pick(&pieces, now - first, self.opts.seconds as f64);
-        if chosen.is_empty() {
-            return Err("Instant replay is still starting. Try again in a moment.".into());
-        }
         // Copy first: the buffer keeps rolling while we work.
         let work = self
             .dir
             .with_file_name(format!("replay-save-{}", (now * 1000.0) as u64));
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         let result = (|| -> Result<PathBuf, String> {
-            let mut list = String::new();
-            for (i, p) in chosen.iter().enumerate() {
-                let src = self.dir.join(&p.file);
-                let dst = work.join(format!("{i:03}.mkv"));
-                if std::fs::copy(&src, &dst).is_ok()
-                    && dst.metadata().map(|m| m.len() > 0).unwrap_or(false)
-                {
-                    list.push_str(&format!(
-                        "file '{}'\n",
-                        dst.file_name().unwrap().to_string_lossy()
-                    ));
-                }
+            let chosen = pick(&pieces, self.opts.seconds as f64, |p| {
+                let dst = work.join(&p.file);
+                std::fs::copy(self.dir.join(&p.file), &dst).is_ok()
+                    && ffmpeg::probe(&dst)
+                        .map(|i| i.duration > 0.0)
+                        .unwrap_or(false)
+            });
+            if chosen.is_empty() {
+                return Err("Instant replay is still starting. Try again in a moment.".into());
             }
-            if list.is_empty() {
-                return Err("Nothing has been buffered yet.".into());
-            }
+            let list: String = chosen
+                .iter()
+                .map(|p| format!("file '{}'\n", p.file))
+                .collect();
             std::fs::write(work.join("list.txt"), list).map_err(|e| e.to_string())?;
             let joined = work.join("joined.mkv");
             ffmpeg::run_capture_stderr(&[
@@ -353,7 +401,7 @@ impl Replay {
             let v0 = first + chosen[0].start;
             // Sound for exactly the same stretch.
             let mut audio = Vec::new();
-            for (i, (_, ring)) in self.tracks.iter().enumerate() {
+            for (i, ring) in self.rings.iter().enumerate() {
                 let r = ring.lock();
                 if r.rate == 0 {
                     continue;
@@ -428,21 +476,35 @@ impl Replay {
         result
     }
 
-    pub fn stop(mut self) {
-        if let Some(mut i) = self.stdin.take() {
+    /// Stop capturing and delete the buffer. Safe to call more than once.
+    pub fn stop(&self) {
+        if self.stopped.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(mut i) = self.stdin.lock().take() {
             let _ = i.write_all(b"q");
             let _ = i.flush();
         }
         let deadline = Instant::now() + Duration::from_secs(4);
-        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        let mut child = self.child.lock();
+        while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        for (t, _) in self.tracks.drain(..) {
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(child);
+        for t in self.tracks.lock().drain(..) {
             t.finish();
         }
+        // Wait for a save in progress before removing its source files.
+        let _one = self.saving.lock();
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl Drop for Replay {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -553,11 +615,19 @@ mod tests {
                 end: 9.2
             }
         );
-        let k = pick(&p, 9.2, 5.0);
+        let k = pick(&p, 5.0, |_| true);
         assert_eq!(
             k.iter().map(|p| p.file.as_str()).collect::<Vec<_>>(),
             ["piece-002.mkv", "piece-003.mkv", "piece-004.mkv"]
         );
+        // The piece being written can't be read: an older one fills in, so
+        // the replay is still at least as long as asked.
+        let k = pick(&p, 5.0, |p| p.file != "piece-004.mkv");
+        assert_eq!(
+            k.iter().map(|p| p.file.as_str()).collect::<Vec<_>>(),
+            ["piece-001.mkv", "piece-002.mkv", "piece-003.mkv"]
+        );
+        assert!(pick(&p, 5.0, |_| false).is_empty());
         // Wraps back to 000 after the last index.
         let w = read_pieces("piece-004.mkv,8.0,10.0\n", 5, 10.5);
         assert_eq!(w.last().unwrap().file, "piece-000.mkv");

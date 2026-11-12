@@ -62,7 +62,7 @@ impl Default for Settings {
             record_smooth_cursor: true,
             countdown: 3,
             replay_seconds: 30,
-            replay_hotkey: "CommandOrControl+Shift+S".into(),
+            replay_hotkey: DEFAULT_REPLAY_HOTKEY.into(),
             replays_folder: None,
             default_target_mb: 25.0,
             save_next_to_original: true,
@@ -75,11 +75,25 @@ impl Default for Settings {
     }
 }
 
+/// Saves the last moments of instant replay. Registered only while replay runs.
+pub const DEFAULT_REPLAY_HOTKEY: &str = "CommandOrControl+Alt+R";
+
 pub fn load(path: &Path) -> Settings {
-    std::fs::read_to_string(path)
+    let mut s: Settings = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    migrate(&mut s);
+    s
+}
+
+/// Fix values written by older versions.
+pub fn migrate(s: &mut Settings) {
+    // 0.3.0 used Ctrl+Shift+S, which took "Save as" away from every other app.
+    if s.replay_hotkey.trim().is_empty() || s.replay_hotkey == "CommandOrControl+Shift+S" {
+        s.replay_hotkey = DEFAULT_REPLAY_HOTKEY.into();
+    }
+    s.replay_seconds = s.replay_seconds.clamp(5, 600);
 }
 
 pub fn save(path: &Path, s: &Settings) -> Result<(), String> {
@@ -107,6 +121,24 @@ fn yes() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_replay_hotkey_is_moved_off_save_as() {
+        let mut s = Settings {
+            replay_hotkey: "CommandOrControl+Shift+S".into(),
+            replay_seconds: 0,
+            ..Default::default()
+        };
+        migrate(&mut s);
+        assert_eq!(s.replay_hotkey, DEFAULT_REPLAY_HOTKEY);
+        assert_eq!(s.replay_seconds, 5);
+        let mut custom = Settings {
+            replay_hotkey: "Alt+F9".into(),
+            ..Default::default()
+        };
+        migrate(&mut custom);
+        assert_eq!(custom.replay_hotkey, "Alt+F9");
+    }
+
     use super::*;
 
     #[test]

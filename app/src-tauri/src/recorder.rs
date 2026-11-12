@@ -467,7 +467,7 @@ impl Ring {
             self.end_wall = start;
         } else if start - self.end_wall > 0.03 {
             let frames = ((start - self.end_wall) * self.frames_per_sec()).round() as usize;
-            self.buf.extend(std::iter::repeat_n(0i16, frames * ch));
+            self.buf.extend(std::iter::repeat(0i16).take(frames * ch));
             self.end_wall = start;
         }
         self.buf.extend(samples.iter().copied());

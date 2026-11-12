@@ -99,7 +99,12 @@ class Editor {
     const onKey = (e: KeyboardEvent) => this.onKey(e);
     document.addEventListener("keydown", onKey);
     this.unsubs.push(() => document.removeEventListener("keydown", onKey));
-    const onResize = () => this.layoutStage();
+    const onResize = () => {
+      // A smaller window shrinks a tall timeline so the preview stays usable.
+      if (!this.timelineEl.classList.contains("collapsed") && this.timelineHeight() > window.innerHeight * 0.45) {
+        this.setTimelineHeight(this.timelineHeight(), false);
+      } else this.layoutStage();
+    };
     window.addEventListener("resize", onResize);
     this.unsubs.push(() => window.removeEventListener("resize", onResize));
     await this.loadMedia();
@@ -250,7 +255,7 @@ class Editor {
   }
 
   tool(ic: Parameters<typeof icon>[0], label: string, key: string, run: () => void) {
-    return h("button", { type: "button", class: "tool", "data-tooltip": key ? `${label} (${key})` : label, "data-tooltip-pos": "top", onclick: run }, icon(ic, 15), label, key ? h("span", { class: "k" }, key) : null);
+    return h("button", { type: "button", class: "tool", onclick: run }, icon(ic, 15), label, key ? h("span", { class: "k" }, key) : null);
   }
 
   renderAll() {
@@ -631,7 +636,8 @@ class Editor {
   }
 
   setTimelineHeight(px: number, save = true) {
-    const max = Math.max(160, window.innerHeight * 0.7);
+    // Keep most of the window for the preview.
+    const max = Math.max(160, window.innerHeight * 0.45);
     const hgt = Math.round(Math.min(max, Math.max(130, px)));
     this.timelineEl.style.height = `${hgt}px`;
     this.timelineEl.classList.remove("collapsed");

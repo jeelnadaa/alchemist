@@ -9,6 +9,7 @@ import { go, take } from "../router";
 import type { Shell } from "../shell";
 import { store } from "../store";
 import { errorText, modal, segmented, toast, toggleRow } from "../ui/common";
+import { replayKeys, saveReplay } from "../ui/replay";
 
 type Kind = "screen" | "window" | "area";
 
@@ -106,40 +107,37 @@ export async function mount(shell: Shell) {
 
   let replayActive = false;
   let replayBuffered = 0;
-  const replaySlot = h("span", { class: "row", style: { gap: "6px" } });
+  // Instant replay sits in its own strip under the recording toolbar, so the
+  // two are never confused: Record makes a full clip, Replay keeps the last moments.
+  const replaySlot = h("div", { class: "replaybar", role: "group", "aria-label": "Instant replay" });
 
+  let replayShown = "";
+  const bufferedEl = h("span", null, "0");
   const renderReplay = () => {
+    const secs = store.settings.replaySeconds || 30;
+    bufferedEl.textContent = String(Math.round(replayBuffered));
+    // Rebuild only when something visible changes, so buttons keep focus and clicks land.
+    const key = `${replayActive}|${secs}|${replayKeys()}`;
+    if (key === replayShown) return;
+    replayShown = key;
     clear(replaySlot);
-    if (!replayActive) {
-      replaySlot.appendChild(
-        h("button", {
-          type: "button",
-          class: "pill",
-          "data-tooltip": `Start instant replay background buffer (${store.settings.replaySeconds || 30}s)`,
-          "data-tooltip-pos": "top",
-          onclick: () => toggleReplay()
-        }, icon("sparkle", 16), "Replay Buffer")
-      );
+    const length = secs >= 60 ? `${secs / 60} min` : `${secs} s`;
+    replaySlot.classList.toggle("on", replayActive);
+    replaySlot.append(
+      h("span", { class: "replay-ic" }, icon("sparkle", 16)),
+      h("span", { class: "grow col", style: { gap: "2px" } },
+        h("strong", null, replayActive ? "Instant replay is on" : "Instant replay"),
+        h("span", { class: "tiny muted" }, replayActive
+          ? h("span", null, `Keeping the last ${length} (`, bufferedEl, " s so far). Press ")
+          : `Keeps the last ${length} in the background so you can save a moment after it happens. Saved to your Replays folder.`,
+          replayActive ? h("span", { class: "kbd" }, replayKeys()) : "",
+          replayActive ? " or Save." : "")));
+    if (replayActive) {
+      replaySlot.append(
+        h("button", { type: "button", class: "btn primary", onclick: () => saveReplay() }, icon("check", 15), "Save replay"),
+        h("button", { type: "button", class: "btn", onclick: () => toggleReplay() }, "Turn off"));
     } else {
-      replaySlot.appendChild(
-        h("button", {
-          type: "button",
-          class: "btn primary",
-          style: { height: "42px", padding: "0 14px" },
-          "data-tooltip": "Save last moments to Replays folder (Ctrl Shift S)",
-          "data-tooltip-pos": "top",
-          onclick: () => saveReplay()
-        }, icon("check", 15), `Save Replay (${Math.round(replayBuffered)}s)`)
-      );
-      replaySlot.appendChild(
-        h("button", {
-          type: "button",
-          class: "icon-btn",
-          "data-tooltip": "Stop replay buffer",
-          "data-tooltip-pos": "top",
-          onclick: () => toggleReplay()
-        }, icon("close", 16))
-      );
+      replaySlot.append(h("button", { type: "button", class: "btn", onclick: () => toggleReplay() }, "Turn on"));
     }
   };
 
@@ -166,7 +164,6 @@ export async function mount(shell: Shell) {
     h("span", { class: "sep" }),
     qualityBtn,
     h("button", { type: "button", class: "recbtn", "data-tooltip": "Start recording (Ctrl Shift R)", "data-tooltip-pos": "top", onclick: () => start() }, "Record"),
-    replaySlot,
     h("button", { type: "button", class: "icon-btn", "aria-label": "More recording options", "data-tooltip": "Recording options", "data-tooltip-pos": "top", onclick: () => openMore() }, icon("more", 18)));
 
   const page = h("div", { class: "recorder" },
@@ -175,7 +172,8 @@ export async function mount(shell: Shell) {
     errorBox,
     toolbar,
     estimate,
-    h("p", { class: "muted small" }, "Record starts a full clip (", h("span", { class: "kbd" }, "Ctrl Shift R"), "). Replay buffers continuously in the background and saves the last moments on hotkey (", h("span", { class: "kbd" }, "Ctrl Shift S"), ")."));
+    replaySlot,
+    h("p", { class: "muted small" }, h("span", { class: "kbd" }, "Ctrl Shift R"), " starts or stops recording from anywhere. With instant replay on, press ", h("span", { class: "kbd" }, replayKeys()), " to save them to your Replays folder."));
   shell.main.appendChild(page);
   await renderSource();
 
@@ -320,21 +318,14 @@ export async function mount(shell: Shell) {
         replayActive = true;
         replayBuffered = st.buffered;
         renderReplay();
-        toast(`Instant replay buffering last ${st.seconds}s in the background.`);
+        toast(`Instant replay is on: press ${replayKeys()} any time to save the last ${st.seconds} seconds.`);
+        for (const n of st.notes) toast(n, { error: true });
       } catch (e) {
         toast(errorText(e), { error: true });
       }
     }
   }
 
-  async function saveReplay() {
-    try {
-      const p = await call<string>("replay_save");
-      toast(`Instant replay saved: ${p.split(/[\\/]/).pop()}`);
-    } catch (e) {
-      toast(errorText(e), { error: true });
-    }
-  }
 
   if (take("record-now")) start();
   return () => {

@@ -8,6 +8,7 @@ import { go, request } from "./router";
 import { store } from "./store";
 import { logo, modal } from "./ui/common";
 import { openPalette, rememberFile } from "./ui/palette";
+import { replayKeys, saveReplay } from "./ui/replay";
 
 export interface Shell {
   root: HTMLElement;
@@ -37,16 +38,8 @@ export function buildShell(): Shell {
     type: "button",
     class: "jobchip hidden",
     style: { borderColor: "color-mix(in srgb, var(--accent) 50%, transparent)" },
-    "data-tooltip": "Instant replay active. Click to save (Ctrl Shift S)",
     "data-tooltip-pos": "bottom",
-    onclick: async () => {
-      try {
-        const p = await call<string>("replay_save");
-        import("./ui/common").then(({ toast }) => toast(`Instant replay saved: ${fileName(p)}`));
-      } catch (e: any) {
-        import("./ui/common").then(({ toast, errorText }) => toast(errorText(e), { error: true }));
-      }
-    }
+    onclick: () => { saveReplay(); },
   });
   const rightSlot = h("div", { class: "row" });
   const right = h("div", { class: "title-right" }, replayChip, jobChip, rightSlot);
@@ -55,7 +48,7 @@ export function buildShell(): Shell {
   const links = new Map<string, HTMLAnchorElement>();
   const rail = h("nav", { class: "rail", "aria-label": "Main" });
   for (const [route, label, ic] of NAV) {
-    const a = h("a", { href: `#/${route}`, "data-tooltip": label, "data-tooltip-pos": "right" }, icon(ic, 22), label) as HTMLAnchorElement;
+    const a = h("a", { href: `#/${route}` }, icon(ic, 22), label) as HTMLAnchorElement;
     if (route === "edit") {
       a.addEventListener("click", (e) => {
         e.preventDefault();
@@ -67,7 +60,7 @@ export function buildShell(): Shell {
     rail.appendChild(a);
   }
   rail.appendChild(h("div", { class: "spacer" }));
-  const settingsLink = h("a", { href: "#/settings/appearance", "data-tooltip": "Settings", "data-tooltip-pos": "right" }, icon("settings", 22), "Settings") as HTMLAnchorElement;
+  const settingsLink = h("a", { href: "#/settings/appearance" }, icon("settings", 22), "Settings") as HTMLAnchorElement;
   links.set("settings", settingsLink);
   rail.appendChild(settingsLink);
 
@@ -96,6 +89,7 @@ export function buildShell(): Shell {
     const st = await call<{ running: boolean; buffered: number }>("replay_status").catch(() => null);
     if (st?.running) {
       replayChip.classList.remove("hidden");
+      replayChip.setAttribute("data-tooltip", `Instant replay is on. Click or press ${replayKeys()} to save the last moments.`);
       clear(replayChip);
       replayChip.append(
         h("span", { class: "dot", style: { background: "var(--ok)", boxShadow: "0 0 8px var(--ok)" } }),

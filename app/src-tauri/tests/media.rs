@@ -799,6 +799,7 @@ fn real_instant_replay() {
         mic: false,
         system_audio: true,
         preset: recorder::Preset::Tutorial,
+        video: None,
     };
     let r = replay::Replay::start(opts, tmp.path().join("buffer")).expect("replay starts");
     // Too early is a clear message, not a broken file.
@@ -810,10 +811,20 @@ fn real_instant_replay() {
     r.stop();
     assert!(saved.starts_with(&out_dir));
     let name = saved.file_name().unwrap().to_string_lossy().to_string();
-    assert!(name.starts_with("Replay ") && name.ends_with(".mp4"), "{name}");
+    assert!(
+        name.starts_with("Replay ") && name.ends_with(".mp4"),
+        "{name}"
+    );
     let info = ffmpeg::probe(&saved).unwrap();
-    eprintln!("replay {name}: {:.2} s, audio {}", info.duration, info.has_audio);
-    assert!(info.duration >= 4.8 && info.duration <= 8.5, "duration {}", info.duration);
+    eprintln!(
+        "replay {name}: {:.2} s, audio {}",
+        info.duration, info.has_audio
+    );
+    assert!(
+        info.duration >= 4.8 && info.duration <= 8.5,
+        "duration {}",
+        info.duration
+    );
     assert_eq!((info.width, info.height), (640, 360));
     assert!(info.has_audio);
     // The rolling buffer is removed when replay stops.

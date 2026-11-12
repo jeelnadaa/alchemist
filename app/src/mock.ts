@@ -188,10 +188,19 @@ export async function mockInvoke(cmd: string, a: Record<string, any>, emit: Emit
       emit("replay", "stopped");
       return null;
     case "replay_save": {
-      const savePath = "C:/Users/you/Videos/Alchemist/Replays/Replay-Saved.mp4";
+      if (!store.replay) {
+        const msg = "Instant replay is off. Turn it on in Record first.";
+        emit("replay-error", msg);
+        throw new Error(msg);
+      }
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const savePath = `C:/Users/you/Videos/Alchemist/Replays/Replay ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.mp4`;
       emit("replay-saved", savePath);
       return savePath;
     }
+    case "replays_dir":
+      return "C:/Users/you/Videos/Alchemist/Replays";
     case "replay_status":
       if (!store.replay) return { running: false, seconds: 30, buffered: 0, notes: [] };
       return {

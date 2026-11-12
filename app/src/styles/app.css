@@ -1124,6 +1124,30 @@ input[type="range"]::-webkit-slider-thumb:hover {
   box-shadow: var(--specular);
 }
 .rectool .sep { width: 1px; height: 26px; background: var(--line); margin: 0 4px; }
+
+/* Instant replay strip under the recording toolbar. */
+.replaybar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 720px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--glass-surf);
+  text-align: left;
+}
+.replaybar.on { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.replaybar .replay-ic {
+  width: 32px; height: 32px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.replaybar.on .replay-ic { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.replaybar .btn { flex: none; }
 .recbtn {
   height: 42px;
   padding: 0 20px 0 16px;
