@@ -23,7 +23,7 @@ export type Source =
   | { kind: "screen"; index: number; x: number; y: number; width: number; height: number }
   | { kind: "window"; title: string }
   | { kind: "area"; x: number; y: number; width: number; height: number; screenIndex: number };
-export interface RecordOptions { source: Source; mic: boolean; systemAudio: boolean; camera: boolean; preset: "tutorial" | "high" | "tiny"; video?: { width: number; height: number; fps: number } | null; recordKeys: boolean; autoStopSeconds?: number | null; autoStopMb?: number | null }
+export interface RecordOptions { source: Source; mic: boolean; systemAudio: boolean; camera: boolean; preset: "tutorial" | "high" | "tiny"; video?: { width: number; height: number; fps: number } | null; recordKeys: boolean; autoStopSeconds?: number | null; autoStopMb?: number | null; separateCursor?: boolean }
 export interface Manifest { id: string; startedUnix: number; state: string; fps: number; segments: string[]; video?: string | null; mic?: string | null; systemAudio?: string | null; camera?: string | null; events?: string | null; duration: number; droppedFrames: number; bytes: number; encoder: string; notes: string[] }
 export interface RecordStatus { recording: boolean; paused: boolean; seconds: number; bytes: number; droppedFrames: number; freeBytes?: number | null; warning?: string | null; micLevel: number }
 
@@ -37,14 +37,18 @@ export interface Track { id: string; kind: "video" | "overlay" | "text" | "audio
 export interface Media { id: string; path: string; kind: "video" | "audio" | "image"; duration: number; width: number; height: number; hasAudio: boolean; missing: boolean }
 export interface Zoom { start: number; end: number; scale: number; x: number; y: number }
 export interface Caption { start: number; end: number; text: string }
-export interface Project { version: number; id: string; name: string; created: number; modified: number; settings: { width: number; height: number; fps: number; background: string; padding: number; radius: number; shadow?: boolean }; media: Media[]; tracks: Track[]; zooms: Zoom[]; zoomSmoothness: number; captions: Caption[]; markers: { t: number; label: string }[]; inPoint?: number | null; outPoint?: number | null; events?: string | null }
+export interface Project { version: number; id: string; name: string; created: number; modified: number; settings: { width: number; height: number; fps: number; background: string; padding: number; radius: number; shadow?: boolean }; media: Media[]; tracks: Track[]; zooms: Zoom[]; zoomSmoothness: number; captions: Caption[]; markers: { t: number; label: string }[]; inPoint?: number | null; outPoint?: number | null; events?: string | null; eventsMedia?: string | null; sourceRect?: [number, number, number, number] | null; cursorHidden?: boolean; cursor?: CursorSettings }
+export interface CursorSettings { show: boolean; size: number; smoothing: number; ripple: boolean; highlight: boolean; keys: boolean; color: string }
+export const defaultCursor: CursorSettings = { show: true, size: 1, smoothing: 0.5, ripple: true, highlight: false, keys: true, color: "#5b8cff" };
+/** Smoothed cursor path (t, x, y) at `rate` Hz, clicks (t, x, y) and keystroke labels (start, end, text), in source time and screen pixels. */
+export interface CursorData { path: [number, number, number][]; rate: number; clicks: [number, number, number][]; keys: [number, number, string][] }
 export interface ProjectSummary { id: string; name: string; modified: number; duration: number; thumb?: string | null }
 export interface ExportRequest { preset: "share" | "vertical" | "small" | "gif" | "audio" | "custom"; output: string; range?: [number, number] | null; width?: number | null; height?: number | null; fps?: number | null; burnCaptions: boolean; sidecarCaptions: boolean; loudness: boolean; useHardware: boolean; targetMb?: number | null }
 
 export interface Settings {
   theme: string; darkTheme: string; lightTheme: string; followSystem: boolean; accent: string | null; textSize: string; reduceMotion: boolean;
   updateMode: "auto" | "notify" | "off"; betaChannel: boolean; lastUpdateCheck: number; useHardware: boolean;
-  recordPreset: "tutorial" | "high" | "tiny"; recordMic: boolean; recordSystemAudio: boolean; recordCamera: boolean; recordKeys: boolean; countdown: number;
+  recordPreset: "tutorial" | "high" | "tiny"; recordMic: boolean; recordSystemAudio: boolean; recordCamera: boolean; recordKeys: boolean; recordSmoothCursor: boolean; countdown: number;
   defaultTargetMb: number; saveNextToOriginal: boolean; exportFolder: string | null; shortcutPreset: string; shortcuts: Record<string, string>; firstRunDone: boolean;
   [k: string]: unknown;
 }
@@ -52,7 +56,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   theme: "obsidian", darkTheme: "obsidian", lightTheme: "salt", followSystem: false, accent: null, textSize: "default", reduceMotion: false,
   updateMode: "auto", betaChannel: false, lastUpdateCheck: 0, useHardware: true, recordPreset: "tutorial", recordMic: true, recordSystemAudio: true,
-  recordCamera: false, recordKeys: false, countdown: 3, defaultTargetMb: 25, saveNextToOriginal: true, exportFolder: null, shortcutPreset: "alchemist", shortcuts: {}, firstRunDone: false,
+  recordCamera: false, recordKeys: false, recordSmoothCursor: true, countdown: 3, defaultTargetMb: 25, saveNextToOriginal: true, exportFolder: null, shortcutPreset: "alchemist", shortcuts: {}, firstRunDone: false,
 };
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

@@ -226,6 +226,11 @@ export async function mockInvoke(cmd: string, a: Record<string, any>, emit: Emit
       p.tracks[0].clips.push(clip(v.id));
       p.tracks[2].clips.push({ ...clip(m.id), cleanVoice: true });
       p.zooms = [{ start: 6, end: 11, scale: 2, x: 0.75, y: 0.7 }, { start: 22, end: 27, scale: 1.8, x: 0.3, y: 0.4 }];
+      p.events = "C:/recordings/events.jsonl";
+      p.eventsMedia = v.id;
+      p.sourceRect = [0, 0, 1920, 1080];
+      p.cursorHidden = true;
+      p.cursor = { show: true, size: 1, smoothing: 0.5, ripple: true, highlight: false, keys: true, color: "#5b8cff" };
       store.projects[p.id] = p;
       return p;
     }
@@ -235,6 +240,17 @@ export async function mockInvoke(cmd: string, a: Record<string, any>, emit: Emit
       return [{ start: 12.2, end: 15.6 }, { start: 30.1, end: 33.0 }, { start: 38.5, end: 45.2 }];
     case "auto_zoom":
       return [{ start: 6, end: 11, scale: 2, x: 0.75, y: 0.7 }];
+    case "cursor_data": {
+      // A lazy figure-of-eight across the screen with a click every 4 s.
+      const rate = 30;
+      const path: [number, number, number][] = [];
+      for (let i = 0; i <= 42 * rate; i++) {
+        const t = i / rate;
+        path.push([t, 960 + Math.sin(t * 0.5) * 700, 540 + Math.sin(t) * 350]);
+      }
+      const clicks = path.filter((_, i) => i % (4 * rate) === 2 * rate);
+      return { path, rate, clicks, keys: [[3, 4.2, "Ctrl + S"], [9, 11, "hello world"]] };
+    }
     case "waveform":
       return Array.from({ length: a.buckets }, (_, i) => Math.abs(Math.sin(i / 7)) * 0.6 + Math.random() * 0.25);
     case "thumbnail":

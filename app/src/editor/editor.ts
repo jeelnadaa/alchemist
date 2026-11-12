@@ -1,7 +1,7 @@
 // The editor: preview, a side panel that only shows what the selection
 // needs, and a multi-track timeline. All edits go through editor/model.ts.
 
-import { call, fileUrl, pickFiles, pickFolder, pickSave, reveal, type Caption, type Clip, type Job, type Media, type Project, type Track, type Zoom } from "../api";
+import { call, defaultCursor, fileUrl, type CursorData, type CursorSettings, pickFiles, pickFolder, pickSave, reveal, type Caption, type Clip, type Job, type Media, type Project, type Track, type Zoom } from "../api";
 import { clear, debounce, h, icon } from "../dom";
 import { clock, fileName, timecode } from "../format";
 import { go, take, type Route } from "../router";
@@ -63,6 +63,7 @@ class Editor {
   private raf = 0;
   private lastFrame = 0;
   private videos = new Map<string, HTMLVideoElement | HTMLAudioElement | HTMLImageElement>();
+  private cursorCache: { key: string; data: CursorData | null } | null = null;
   private urls = new Map<string, string>();
   private waves = new Map<string, number[]>();
   private proxies = new Map<string, string>();
@@ -343,6 +344,7 @@ class Editor {
     const audible: { el: HTMLMediaElement; clip: Clip; track: Track }[] = [];
     const overlays = document.createDocumentFragment();
     const anyVisible = visual.some((t) => M.clipAt(t, this.t));
+    let recBox: { left: number; top: number; w: number; h: number; clip: Clip } | null = null;
     for (const track of visual) {
       const slots = new Map<string, number>();
       for (const [c] of M.withTransitions(track)) {
@@ -376,6 +378,9 @@ class Editor {
         transform: `${tr.flipH ? "scaleX(-1)" : ""} ${tr.flipV ? "scaleY(-1)" : ""} rotate(${tr.rotate || 0}deg)`,
         opacity: String(this.fadeAt(c)),
       });
+      if (track.kind === "video" && m.id === p.eventsMedia && !recBox) {
+        recBox = { left: (this.stage.clientWidth - bw) / 2 + tr.x * this.stage.clientWidth, top: (this.stage.clientHeight - bh) / 2 + tr.y * this.stage.clientHeight, w: bw, h: bh, clip: c };
+      }
       if (el) {
         box.appendChild(el);
         if (el instanceof HTMLMediaElement) {
@@ -418,6 +423,8 @@ class Editor {
       if (this.playing && a.el.paused && !a.clip.freeze) a.el.play().catch(() => {});
       if ((!this.playing || a.clip.freeze) && !a.el.paused) a.el.pause();
     }
+
+    if (recBox) this.drawCursor(recBox);
 
     // Zoom applies to the picture (like export); overlays, text and shapes sit on top.
     this.canvas.style.transform = M.previewTransform(p.zooms, p.zoomSmoothness, this.t);
@@ -1092,6 +1099,75 @@ class Editor {
     this.select({ kind: "zoom", index: next.zooms.findIndex((z) => z.start === this.t) });
   }
 
+  /** Cursor data for the preview, loaded once per smoothing value. */
+  private cursorData(): CursorData | null {
+    const p = this.p;
+    if (!p.events) return null;
+    const cs = p.cursor ?? defaultCursor;
+    const key = `${p.events}|${cs.smoothing}`;
+    if (this.cursorCache?.key !== key) {
+      this.cursorCache = { key, data: this.cursorCache?.data ?? null };
+      call<CursorData>("cursor_data", { events: p.events, smoothing: cs.smoothing })
+        .then((d) => { if (this.cursorCache?.key === key) { this.cursorCache.data = d; this.renderStage(); } })
+        .catch(() => {});
+    }
+    return this.cursorCache.data;
+  }
+
+  /** Same picture the export draws: smooth pointer, highlight, click ripple, keystrokes. */
+  private drawCursor(box: { left: number; top: number; w: number; h: number; clip: Clip }) {
+    const p = this.p;
+    const cs = p.cursor ?? defaultCursor;
+    const rect = p.sourceRect;
+    const d = this.cursorData();
+    if (!d || !rect) return;
+    const src = M.sourceTime(box.clip, this.t);
+    const map = (x: number, y: number): [number, number] => [box.left + ((x - rect[0]) / Math.max(1, rect[2])) * box.w, box.top + ((y - rect[1]) / Math.max(1, rect[3])) * box.h];
+    const unit = Math.max(6, (this.stage.clientHeight / 1080) * 34 * Math.min(4, Math.max(0.3, cs.size)));
+    const pos = M.cursorAt(d, src);
+    if (pos) {
+      const [x, y] = map(pos[0], pos[1]);
+      if (cs.highlight) this.canvas.appendChild(h("div", { class: "cursor-hl", style: { left: `${x - unit}px`, top: `${y - unit}px`, width: `${unit * 2}px`, height: `${unit * 2}px`, background: cs.color } }));
+      if (p.cursorHidden && cs.show) {
+        const svg = h("div", { class: "cursor-pt", style: { left: `${x - unit * 0.08}px`, top: `${y - unit * 0.04}px`, width: `${unit}px`, height: `${unit}px` } });
+        svg.innerHTML = `<svg viewBox="0 0 100 100" width="100%" height="100%"><polygon points="8,4 8,78 27,62 42,94 55,88 41,57 66,57" fill="#fff" stroke="#141418" stroke-width="7" stroke-linejoin="round"/></svg>`;
+        this.canvas.appendChild(svg);
+      }
+    }
+    if (cs.ripple) {
+      const c = M.clickAt(d, src);
+      if (c) {
+        const [x, y] = map(c.x, c.y);
+        const r = unit * (0.6 + c.age * 0.6);
+        this.canvas.appendChild(h("div", { class: "cursor-rip", style: { left: `${x - r}px`, top: `${y - r}px`, width: `${r * 2}px`, height: `${r * 2}px`, borderColor: cs.color, opacity: String(1 - c.age) } }));
+      }
+    }
+    if (cs.keys) {
+      const k = M.keyAt(d, src);
+      if (k) this.overlayLayer.appendChild(h("div", { class: "cursor-keys", style: { fontSize: `${Math.max(10, (this.stage.clientHeight / 1080) * 56)}px` } }, k));
+    }
+  }
+
+  cursorControls() {
+    const p = this.p;
+    const cs = { ...defaultCursor, ...(p.cursor ?? {}) };
+    const set = (patch: Partial<CursorSettings>, liveOnly = false) => {
+      const next = { ...M.clone(this.p), cursor: { ...cs, ...patch } };
+      if (liveOnly) { this.p = next; this.renderStage(); } else { this.commit(next); }
+    };
+    return [
+      p.cursorHidden
+        ? toggleRow("Show cursor", "A smooth cursor drawn from the recording's mouse log.", cs.show, (v) => set({ show: v }))
+        : h("p", { class: "tiny muted" }, "This recording has the cursor in the picture. Turn on Smooth cursor in recording options to restyle it next time."),
+      rangeControl("Size", cs.size, 0.5, 3, 0.1, (v) => `${Math.round(v * 100)}%`, (v) => set({ size: v }, true), (v) => set({ size: v })),
+      rangeControl("Smoothness", cs.smoothing, 0, 1, 0.05, (v) => (v < 0.1 ? "Raw" : v < 0.6 ? "Smooth" : "Very smooth"), (v) => set({ smoothing: v }, true), (v) => set({ smoothing: v })),
+      toggleRow("Click ripples", "A ring where you clicked.", cs.ripple, (v) => set({ ripple: v })),
+      toggleRow("Highlight", "A soft spotlight that follows the cursor.", cs.highlight, (v) => set({ highlight: v })),
+      toggleRow("Keystrokes", "Show shortcuts and typing on screen.", cs.keys, (v) => set({ keys: v })),
+      h("label", { class: "ctl" }, h("span", null, "Colour"), h("input", { type: "color", value: cs.color, "aria-label": "Cursor effect colour", style: { width: "100%", height: "36px", border: "0", background: "none" }, onchange: (e: Event) => set({ color: (e.target as HTMLInputElement).value }) })),
+    ];
+  }
+
   projectSections() {
     const p = this.p;
     const s = p.settings;
@@ -1109,6 +1185,7 @@ class Editor {
         h("p", { class: "tiny muted" }, "Padding and rounded corners give recordings a clean app-demo look."),
       ] },
       { title: "Zoom", summary: p.zooms.length ? `${p.zooms.length}` : "Off", build: () => this.zoomControls() },
+      ...(p.events ? [{ title: "Cursor", summary: p.cursorHidden && (p.cursor ?? defaultCursor).show ? "Smooth" : "Effects", build: () => this.cursorControls() }] : []),
       { title: "Size and frame rate", summary: `${s.width}×${s.height}`, build: () => {
         const presets = h("div", { class: "chips" }, ...([["16:9", 1920, 1080], ["9:16", 1080, 1920], ["1:1", 1080, 1080], ["4:5", 1080, 1350]] as [string, number, number][]).map(([n, w, hh]) => h("button", { type: "button", "aria-pressed": String(s.width === w && s.height === hh), onclick: () => set({ width: w, height: hh }) }, n)));
         const w = h("input", { class: "input", type: "number", value: String(s.width), "aria-label": "Width" }) as HTMLInputElement;

@@ -25,7 +25,7 @@ export async function mount(shell: Shell) {
   let monitor = monitors.find((m) => m.primary) || monitors[0];
   let windowTitle = "";
   let area: { x: number; y: number; width: number; height: number } | null = null;
-  const opts = { mic: s.recordMic, systemAudio: s.recordSystemAudio, camera: s.recordCamera, preset: s.recordPreset, keys: s.recordKeys };
+  const opts = { mic: s.recordMic, systemAudio: s.recordSystemAudio, camera: s.recordCamera, preset: s.recordPreset, keys: s.recordKeys, smoothCursor: s.recordSmoothCursor ?? true };
   let custom: { width: number; height: number; fps: number } | null = null;
   let autoStopMin = 0;
   let autoStopMb = 0;
@@ -130,7 +130,7 @@ export async function mount(shell: Shell) {
       return;
     }
     const recordOpts: RecordOptions = {
-      source, mic: opts.mic, systemAudio: opts.systemAudio, camera: opts.camera, preset: opts.preset, video: custom, recordKeys: opts.keys,
+      source, mic: opts.mic, systemAudio: opts.systemAudio, camera: opts.camera, preset: opts.preset, video: custom, recordKeys: opts.keys, separateCursor: opts.smoothCursor,
       autoStopSeconds: autoStopMin ? autoStopMin * 60 : null, autoStopMb: autoStopMb || null,
     };
     await countdown(store.settings.countdown);
@@ -177,6 +177,7 @@ export async function mount(shell: Shell) {
           h("div", { class: "field" }, "Quality", presetSeg),
           h("div", { class: "field" }, "Custom size and frame rate (optional)", h("div", { class: "grid3" }, w, hh, f), notes),
           h("div", { class: "grid2" }, h("label", { class: "field" }, "Stop after (minutes)", minutes), h("label", { class: "field" }, "Stop at size (MB)", mb)),
+          toggleRow("Smooth cursor", "Record the pointer separately so the editor can draw a smooth, resizable cursor with click ripples.", opts.smoothCursor, (v) => { opts.smoothCursor = v; store.set({ recordSmoothCursor: v }); }),
           toggleRow("Record keystrokes", "For keystroke overlays in the editor. Stays on this computer.", opts.keys, (v) => { opts.keys = v; store.set({ recordKeys: v }); }),
           h("label", { class: "field" }, "Countdown before recording", segmented("Countdown", [["0", "Off"], ["3", "3 s"], ["5", "5 s"]], String(store.settings.countdown) as "0" | "3" | "5", (v) => store.set({ countdown: +v })))),
         h("footer", null, h("span", { class: "grow" }), h("button", { type: "button", class: "btn primary", onclick: async () => { await check(); close(); } }, "Done")));

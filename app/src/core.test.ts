@@ -266,3 +266,18 @@ describe("format", () => {
     expect(ago(1000, 1000 + 7200)).toBe("2 h ago");
   });
 });
+
+describe("cursor effects", () => {
+  const d = { path: [[0, 0, 0], [0.5, 50, 10], [1, 100, 20]] as [number, number, number][], rate: 2, clicks: [[0.6, 50, 10]] as [number, number, number][], keys: [[1, 2.2, "Ctrl + S"]] as [number, number, string][] };
+  it("follows the path and hides outside the log", () => {
+    expect(M.cursorAt(d, 0.25)).toEqual([25, 5]);
+    expect(M.cursorAt(d, 5)).toBeNull();
+    expect(M.cursorAt(null, 1)).toBeNull();
+  });
+  it("shows ripples briefly and keystrokes while held", () => {
+    expect(M.clickAt(d, 0.7)?.x).toBe(50);
+    expect(M.clickAt(d, 1.2)).toBeNull();
+    expect(M.keyAt(d, 1.5)).toBe("Ctrl + S");
+    expect(M.keyAt(d, 3)).toBeNull();
+  });
+});

@@ -416,3 +416,32 @@ export function previousTouching(p: Project, clipId: string): Clip | null {
   if (i <= 0) return null;
   return Math.abs(clipEnd(sorted[i - 1]) - f.clip.start) <= 0.05 ? sorted[i - 1] : null;
 }
+
+/** Cursor position on the smoothed path at source time t (null outside the log). */
+export function cursorAt(d: { path: [number, number, number][]; rate: number } | null | undefined, t: number): [number, number] | null {
+  if (!d || !d.path.length) return null;
+  const last = d.path[d.path.length - 1][0];
+  if (t < 0 || t > last + 1 / d.rate) return null;
+  const i = Math.min(d.path.length - 1, Math.max(0, Math.floor(t * d.rate)));
+  const a = d.path[i];
+  const b = d.path[Math.min(i + 1, d.path.length - 1)];
+  const f = Math.min(1, Math.max(0, (t - a[0]) * d.rate));
+  return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+/** The most recent click within `dur` seconds before t: position and age (0..1). */
+export function clickAt(d: { clicks: [number, number, number][] } | null | undefined, t: number, dur = 0.35): { x: number; y: number; age: number } | null {
+  if (!d) return null;
+  for (let i = d.clicks.length - 1; i >= 0; i--) {
+    const [ct, x, y] = d.clicks[i];
+    if (ct <= t && t - ct < dur) return { x, y, age: (t - ct) / dur };
+  }
+  return null;
+}
+
+/** Keystroke label showing at source time t. */
+export function keyAt(d: { keys: [number, number, string][] } | null | undefined, t: number): string | null {
+  if (!d) return null;
+  for (let i = d.keys.length - 1; i >= 0; i--) if (d.keys[i][0] <= t && t < d.keys[i][1]) return d.keys[i][2];
+  return null;
+}

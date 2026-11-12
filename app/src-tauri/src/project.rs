@@ -261,6 +261,46 @@ pub struct Project {
     /// Recording sidecar (cursor/click events), relative or absolute.
     #[serde(default)]
     pub events: Option<PathBuf>,
+    /// The media the event log belongs to (the screen recording).
+    #[serde(default)]
+    pub events_media: Option<String>,
+    /// Screen rectangle that was recorded: x, y, width, height in screen pixels.
+    #[serde(default)]
+    pub source_rect: Option<[f64; 4]>,
+    /// True when the recording has no cursor in the picture, so Alchemist draws one.
+    #[serde(default)]
+    pub cursor_hidden: bool,
+    #[serde(default)]
+    pub cursor: CursorSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CursorSettings {
+    /// Draw Alchemist's smooth cursor (only when the recording has none of its own).
+    pub show: bool,
+    /// 1.0 = normal size.
+    pub size: f64,
+    /// 0 = raw movement, 1 = very smooth.
+    pub smoothing: f64,
+    pub ripple: bool,
+    pub highlight: bool,
+    pub keys: bool,
+    pub color: String,
+}
+
+impl Default for CursorSettings {
+    fn default() -> Self {
+        CursorSettings {
+            show: true,
+            size: 1.0,
+            smoothing: 0.5,
+            ripple: true,
+            highlight: false,
+            keys: true,
+            color: "#5b8cff".into(),
+        }
+    }
 }
 
 pub fn now() -> u64 {
@@ -324,6 +364,10 @@ impl Project {
             in_point: None,
             out_point: None,
             events: None,
+            events_media: None,
+            source_rect: None,
+            cursor_hidden: false,
+            cursor: CursorSettings::default(),
         }
     }
 

@@ -446,6 +446,325 @@ fn content_rect(p: &Project, w: u32, h: u32, box_w: u32, box_h: u32) -> (u32, u3
     ((w - cw) / 2, (h - ch) / 2, cw, ch)
 }
 
+/// Draw the pointer (white with a dark outline), a click ring or a soft
+/// highlight disc into a small transparent PNG.
+pub fn cursor_png(path: &Path, kind: &str, size: u32, rgb: (u8, u8, u8)) -> Result<(), String> {
+    let n = size.max(8);
+    let mut buf = vec![0u8; (n * n * 4) as usize];
+    let s = n as f64;
+    // Pointer polygon in a 0..1 box (tip at the top-left).
+    let poly = [
+        (0.08, 0.04),
+        (0.08, 0.78),
+        (0.27, 0.62),
+        (0.42, 0.94),
+        (0.55, 0.88),
+        (0.41, 0.57),
+        (0.66, 0.57),
+    ];
+    let inside = |px: f64, py: f64, grow: f64| -> bool {
+        let mut c = false;
+        let pts: Vec<(f64, f64)> = poly.iter().map(|(x, y)| (x * s, y * s)).collect();
+        let (cxm, cym) = (0.3 * s, 0.5 * s);
+        let pts: Vec<(f64, f64)> = pts
+            .iter()
+            .map(|(x, y)| {
+                (
+                    cxm + (x - cxm) * (1.0 + grow),
+                    cym + (y - cym) * (1.0 + grow),
+                )
+            })
+            .collect();
+        let mut j = pts.len() - 1;
+        for i in 0..pts.len() {
+            let (xi, yi) = pts[i];
+            let (xj, yj) = pts[j];
+            if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+                c = !c;
+            }
+            j = i;
+        }
+        c
+    };
+    for y in 0..n {
+        for x in 0..n {
+            let mut acc = [0.0f64; 4];
+            for sy in 0..3 {
+                for sx in 0..3 {
+                    let px = x as f64 + (sx as f64 + 0.5) / 3.0;
+                    let py = y as f64 + (sy as f64 + 0.5) / 3.0;
+                    let (r, g, b, a) = match kind {
+                        "ring" => {
+                            let d = ((px - s / 2.0).powi(2) + (py - s / 2.0).powi(2)).sqrt();
+                            let w = s * 0.06;
+                            if (d - s * 0.4).abs() <= w {
+                                (rgb.0 as f64, rgb.1 as f64, rgb.2 as f64, 230.0)
+                            } else {
+                                (0.0, 0.0, 0.0, 0.0)
+                            }
+                        }
+                        "highlight" => {
+                            let d = ((px - s / 2.0).powi(2) + (py - s / 2.0).powi(2)).sqrt();
+                            if d <= s * 0.48 {
+                                (rgb.0 as f64, rgb.1 as f64, rgb.2 as f64, 90.0)
+                            } else {
+                                (0.0, 0.0, 0.0, 0.0)
+                            }
+                        }
+                        _ => {
+                            if inside(px, py, 0.0) {
+                                (255.0, 255.0, 255.0, 255.0)
+                            } else if inside(px, py, 0.16) {
+                                (20.0, 20.0, 24.0, 255.0)
+                            } else {
+                                (0.0, 0.0, 0.0, 0.0)
+                            }
+                        }
+                    };
+                    acc[0] += r * a;
+                    acc[1] += g * a;
+                    acc[2] += b * a;
+                    acc[3] += a;
+                }
+            }
+            if acc[3] > 0.0 {
+                let i = ((y * n + x) * 4) as usize;
+                buf[i] = (acc[0] / acc[3]) as u8;
+                buf[i + 1] = (acc[1] / acc[3]) as u8;
+                buf[i + 2] = (acc[2] / acc[3]) as u8;
+                buf[i + 3] = (acc[3] / 9.0) as u8;
+            }
+        }
+    }
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), n, n);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut wr| wr.write_image_data(&buf))
+        .map_err(|e| e.to_string())
+}
+
+/// Map the recording's screen-space cursor onto the timeline: for every
+/// timeline sample where a clip of the recorded media is visible, the source
+/// time is looked up through that clip (trims, splits and speed included).
+fn cursor_timeline(
+    p: &Project,
+    d: &crate::analysis::CursorData,
+    rate: f64,
+    total: f64,
+) -> Vec<(f64, Option<(f64, f64)>)> {
+    let Some(mid) = &p.events_media else {
+        return Vec::new();
+    };
+    let clips: Vec<&Clip> = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == "video")
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.media_id.as_deref() == Some(mid.as_str()))
+        .collect();
+    let mut out = Vec::new();
+    let steps = (total * rate).floor() as usize;
+    for i in 0..=steps {
+        let t = i as f64 / rate;
+        let pos = clips
+            .iter()
+            .find(|c| t >= c.start && t < c.end())
+            .and_then(|c| {
+                let src = if c.freeze {
+                    c.in_point
+                } else if c.reverse {
+                    c.out - (t - c.start) * c.speed
+                } else {
+                    c.in_point + (t - c.start) * c.speed
+                };
+                crate::analysis::cursor_at(d, src)
+            });
+        out.push((t, pos));
+    }
+    out
+}
+
+/// Clicks and keystrokes moved from source time to timeline time.
+fn source_to_timeline(p: &Project, src: f64) -> Option<f64> {
+    let mid = p.events_media.as_ref()?;
+    p.tracks
+        .iter()
+        .filter(|t| t.kind == "video")
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.media_id.as_deref() == Some(mid.as_str()) && !c.freeze && !c.reverse)
+        .find(|c| src >= c.in_point && src < c.out)
+        .map(|c| c.start + (src - c.in_point) / c.speed)
+}
+
+/// One piece of a cursor path on the timeline: linear from `a` at t0 to `b`
+/// at t1, or hidden (off-screen) when `a` is None.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seg {
+    pub t0: f64,
+    pub t1: f64,
+    pub a: Option<(f64, f64)>,
+    pub b: Option<(f64, f64)>,
+}
+
+/// Turn evenly spaced samples into few linear segments (within `tol` pixels).
+pub fn path_segments(samples: &[(f64, Option<(f64, f64)>)], tol: f64) -> Vec<Seg> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < samples.len() {
+        let visible = samples[i].1.is_some();
+        let mut j = i;
+        while j + 1 < samples.len() && samples[j + 1].1.is_some() == visible {
+            j += 1;
+        }
+        if !visible {
+            out.push(Seg {
+                t0: samples[i].0,
+                t1: samples[i].0,
+                a: None,
+                b: None,
+            });
+        } else {
+            let run: Vec<(f64, f64, f64)> = samples[i..=j]
+                .iter()
+                .filter_map(|(t, p)| p.map(|(x, y)| (*t, x, y)))
+                .collect();
+            let keep = simplify(&run, tol);
+            for w in keep.windows(2) {
+                let (a, b) = (run[w[0]], run[w[1]]);
+                out.push(Seg {
+                    t0: a.0,
+                    t1: b.0,
+                    a: Some((a.1, a.2)),
+                    b: Some((b.1, b.2)),
+                });
+            }
+            let l = run[keep[keep.len() - 1]];
+            out.push(Seg {
+                t0: l.0,
+                t1: l.0,
+                a: Some((l.1, l.2)),
+                b: Some((l.1, l.2)),
+            });
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Ripple rings: shown for `dur` seconds at each click (top-left corner), hidden otherwise.
+pub fn ripple_segments(clicks: &[(f64, (f64, f64))], size: f64, dur: f64) -> Vec<Seg> {
+    let mut rs = vec![Seg {
+        t0: 0.0,
+        t1: 0.0,
+        a: None,
+        b: None,
+    }];
+    for (i, (tl, pos)) in clicks.iter().enumerate() {
+        let c = Some((pos.0 - size / 2.0, pos.1 - size / 2.0));
+        if rs.last().is_some_and(|l| l.t0 >= *tl) {
+            rs.pop();
+        }
+        rs.push(Seg {
+            t0: *tl,
+            t1: tl + dur,
+            a: c,
+            b: c,
+        });
+        let end = tl + dur;
+        if clicks.get(i + 1).map_or(true, |n| n.0 > end) {
+            rs.push(Seg {
+                t0: end,
+                t1: end,
+                a: None,
+                b: None,
+            });
+        }
+    }
+    rs
+}
+
+/// Ramer-Douglas-Peucker on (t, x, y): keep only the points the path needs.
+fn simplify(run: &[(f64, f64, f64)], tol: f64) -> Vec<usize> {
+    if run.len() < 3 {
+        return (0..run.len()).collect();
+    }
+    let mut keep = vec![false; run.len()];
+    keep[0] = true;
+    keep[run.len() - 1] = true;
+    let mut stack = vec![(0, run.len() - 1)];
+    while let Some((s, e)) = stack.pop() {
+        let (a, b) = (run[s], run[e]);
+        let mut worst = (0.0, 0);
+        for (k, p) in run.iter().enumerate().take(e).skip(s + 1) {
+            let f = (p.0 - a.0) / (b.0 - a.0).max(1e-9);
+            let d = (a.1 + (b.1 - a.1) * f - p.1).hypot(a.2 + (b.2 - a.2) * f - p.2);
+            if d > worst.0 {
+                worst = (d, k);
+            }
+        }
+        if worst.0 > tol {
+            keep[worst.1] = true;
+            stack.push((s, worst.1));
+            stack.push((worst.1, e));
+        }
+    }
+    (0..run.len()).filter(|&k| keep[k]).collect()
+}
+
+/// Value of a segment list at time t (what the FFmpeg expression computes).
+pub fn seg_at(segs: &[Seg], t: f64) -> Option<(f64, f64)> {
+    let i = segs.partition_point(|s| s.t0 <= t).checked_sub(1)?;
+    let s = segs[i];
+    let (a, b) = (s.a?, s.b?);
+    let k = if s.t1 > s.t0 {
+        ((t - s.t0) / (s.t1 - s.t0)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    Some((a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k))
+}
+
+/// FFmpeg expression for one axis: a balanced if(lt(t,..)) tree, so each
+/// frame costs log2(segments) comparisons whatever the recording length.
+fn seg_expr(segs: &[Seg], axis: usize, offset: f64) -> String {
+    fn leaf(s: &Seg, axis: usize, offset: f64) -> String {
+        let pick = |p: (f64, f64)| if axis == 0 { p.0 } else { p.1 };
+        match (s.a, s.b) {
+            (Some(a), Some(b)) => {
+                let (va, vb) = (pick(a) + offset, pick(b) + offset);
+                if s.t1 > s.t0 && (vb - va).abs() > 0.01 {
+                    format!("{:.1}+{:.3}*(t-{})", va, (vb - va) / (s.t1 - s.t0), f(s.t0))
+                } else {
+                    format!("{:.1}", va)
+                }
+            }
+            _ => "-10000".into(),
+        }
+    }
+    fn tree(segs: &[Seg], axis: usize, offset: f64) -> String {
+        if segs.len() == 1 {
+            return leaf(&segs[0], axis, offset);
+        }
+        let mid = segs.len() / 2;
+        format!(
+            "if(lt(t,{}),{},{})",
+            f(segs[mid].t0),
+            tree(&segs[..mid], axis, offset),
+            tree(&segs[mid..], axis, offset)
+        )
+    }
+    if segs.is_empty() {
+        return "-10000".into();
+    }
+    format!(
+        "if(lt(t,{}),-10000,{})",
+        f(segs[0].t0),
+        tree(segs, axis, offset)
+    )
+}
+
 /// Build the full export. `font` is a TTF bundled with the app; `tmp` is a
 /// scratch folder for text files (avoids all drawtext escaping problems).
 pub fn build(
@@ -504,6 +823,7 @@ pub fn build(
     let (w, h, fps) = (c.width, c.height, c.fps);
 
     let inputs = collect_inputs(p, total);
+    let mut extra_inputs: Vec<String> = Vec::new();
     let mut g = String::new();
     let mut temp_files = Vec::new();
     let pad = p.settings.padding.min(w.min(h) / 3);
@@ -581,6 +901,132 @@ pub fn build(
     };
     place(&mut g, &mut last, &mut k, &["video"]);
 
+    // 2b. Cursor, click ripples and highlight from the event log, drawn into
+    //     the picture before zoom so they zoom with it.
+    let mut key_texts: Vec<(f64, f64, String, u32, String, String, String)> = Vec::new();
+    if let (Some(ev_path), Some([sx, sy, sw, sh])) = (&p.events, p.source_rect) {
+        let cs = &p.cursor;
+        let wants_cursor = p.cursor_hidden && cs.show;
+        if wants_cursor || cs.ripple || cs.highlight || cs.keys {
+            let events = crate::analysis::read_events(ev_path);
+            let data = crate::analysis::cursor_data(&events, cs.smoothing, 30.0);
+            // Where the recording sits in the frame (same maths as the picture).
+            let main = p.events_media.as_ref().and_then(|id| p.media(id));
+            let (px, py, pw, ph) = match (fit, main) {
+                (FitMode::Fill, Some(m)) if m.width > 0 => {
+                    let s = (w as f64 / m.width as f64).max(h as f64 / m.height as f64);
+                    (
+                        (w as f64 - m.width as f64 * s) / 2.0,
+                        (h as f64 - m.height as f64 * s) / 2.0,
+                        m.width as f64 * s,
+                        m.height as f64 * s,
+                    )
+                }
+                _ => (cx as f64, cy as f64, cw as f64, ch as f64),
+            };
+            let map = |x: f64, y: f64| {
+                (
+                    px + (x - sx) / sw.max(1.0) * pw,
+                    py + (y - sy) / sh.max(1.0) * ph,
+                )
+            };
+            let unit = (h as f64 / 1080.0 * 34.0 * cs.size.clamp(0.3, 4.0))
+                .round()
+                .max(10.0) as u32;
+            // Positions become per-frame expressions (a balanced if() tree over a
+            // simplified path), evaluated on each frame's own timestamp.
+            let mut layers: Vec<(&str, &str, u32, String, String)> = Vec::new(); // name, png kind, size, x, y
+            let samples: Vec<(f64, Option<(f64, f64)>)> = if data.path.is_empty() {
+                Vec::new()
+            } else {
+                cursor_timeline(p, &data, 30.0, total)
+                    .into_iter()
+                    .map(|(t, pos)| (t, pos.map(|(x, y)| map(x, y))))
+                    .collect()
+            };
+            let segs = path_segments(&samples, 1.0);
+            if segs.iter().any(|s| s.a.is_some()) {
+                if cs.highlight {
+                    let sz = unit * 2;
+                    let o = -(sz as f64) / 2.0;
+                    layers.push((
+                        "hl",
+                        "highlight",
+                        sz,
+                        seg_expr(&segs, 0, o),
+                        seg_expr(&segs, 1, o),
+                    ));
+                }
+                if wants_cursor {
+                    let (ox, oy) = (-(unit as f64) * 0.08, -(unit as f64) * 0.04);
+                    layers.push((
+                        "cur",
+                        "pointer",
+                        unit,
+                        seg_expr(&segs, 0, ox),
+                        seg_expr(&segs, 1, oy),
+                    ));
+                }
+            }
+            if cs.ripple {
+                let sz = unit * 2;
+                let mut clicks: Vec<(f64, (f64, f64))> = data
+                    .clicks
+                    .iter()
+                    .filter_map(|(t, x, y)| source_to_timeline(p, *t).map(|tl| (tl, map(*x, *y))))
+                    .collect();
+                clicks.sort_by(|a, b| a.0.total_cmp(&b.0));
+                if !clicks.is_empty() {
+                    let rs = ripple_segments(&clicks, sz as f64, 0.35);
+                    layers.insert(
+                        0,
+                        (
+                            "rip",
+                            "ring",
+                            sz,
+                            seg_expr(&rs, 0, 0.0),
+                            seg_expr(&rs, 1, 0.0),
+                        ),
+                    );
+                }
+            }
+            if !layers.is_empty() {
+                std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+                for (name, kind, sz, ex, ey) in &layers {
+                    let png_path = tmp.join(format!("cursor-{name}.png"));
+                    cursor_png(&png_path, kind, *sz, rgb_of(&cs.color))?;
+                    temp_files.push(png_path.clone());
+                    let idx = inputs.index.len() + extra_inputs.len() / 6;
+                    extra_inputs.extend([
+                        "-loop".into(),
+                        "1".into(),
+                        "-t".into(),
+                        f(total),
+                        "-i".into(),
+                        png_path.to_string_lossy().to_string(),
+                    ]);
+                    let _ = write!(g, ";[{idx}:v]format=rgba[img{name}];[{last}][img{name}]overlay=x='{ex}':y='{ey}':eval=frame[o{name}]");
+                    last = format!("o{name}");
+                }
+            }
+            if cs.keys {
+                for (s0, e0, label) in &data.keys {
+                    if let Some(tl) = source_to_timeline(p, *s0) {
+                        key_texts.push((
+                            tl,
+                            tl + (e0 - s0),
+                            label.clone(),
+                            56 * h / 1080,
+                            "top".into(),
+                            "#ffffff".into(),
+                            "none".into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // 3. Rounded corners: a static mask in the background colour, made once and looped.
     if p.settings.radius > 0 && pad > 0 {
         let (bx, by, box_w, box_h) = (cx, cy, cw, ch);
@@ -615,7 +1061,7 @@ pub fn build(
     place(&mut g, &mut last, &mut k, &["overlay"]);
 
     // 5. Shapes: boxes, highlights, blur and pixelate regions, arrows.
-    let mut extra_inputs: Vec<String> = Vec::new();
+
     for t in p
         .tracks
         .iter()
@@ -684,7 +1130,7 @@ pub fn build(
 
     // 6. Text clips and burned-in captions (drawtext with text files).
     let fontfile = filter_path(font);
-    let mut texts: Vec<(f64, f64, String, u32, String, String, String)> = Vec::new();
+    let mut texts: Vec<(f64, f64, String, u32, String, String, String)> = key_texts;
     for t in p.tracks.iter().filter(|t| t.kind == "text") {
         for c in &t.clips {
             if let Some(tp) = &c.text {
@@ -1379,5 +1825,93 @@ mod tests {
         assert_eq!(&mid[..3], &[255, 0, 0]);
         assert!(mid[3] > 200);
         assert_eq!(at(1900, 1060)[3], 0);
+    }
+
+    #[test]
+    fn cursor_ripples_and_keys_from_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let ev = dir.path().join("events.jsonl");
+        std::fs::write(&ev, "{\"t\":0.0,\"type\":\"move\",\"x\":100,\"y\":100}\n{\"t\":2.0,\"type\":\"move\",\"x\":960,\"y\":540}\n{\"t\":2.5,\"type\":\"click\",\"button\":\"Left\"}\n{\"t\":3.0,\"type\":\"key\",\"key\":\"ControlLeft\"}\n{\"t\":3.1,\"type\":\"key\",\"key\":\"KeyS\"}\n").unwrap();
+        let mut p = demo();
+        p.events = Some(ev);
+        p.events_media = Some("m1".into());
+        p.source_rect = Some([0.0, 0.0, 1920.0, 1080.0]);
+        p.cursor_hidden = true;
+        p.cursor.highlight = true;
+        let tmp = dir.path().join("t");
+        let plan = build(&p, &req(Preset::Share), &caps(), Path::new("f.ttf"), &tmp).unwrap();
+        let g = std::fs::read_to_string(tmp.join("graph.txt")).unwrap();
+        assert!(g.contains("[imgcur]overlay=x='if(lt(t,"));
+        assert!(g.contains("[imgrip]overlay=x='") && g.contains("[imghl]overlay=x='"));
+        assert!(!g.contains("sendcmd"));
+        assert!(std::fs::read_to_string(tmp.join("text-0.txt")).unwrap() == "Ctrl + S");
+        assert!(plan.args.iter().any(|a| a.ends_with("cursor-cur.png")));
+        // No cursor drawn when the recording already has one.
+        p.cursor_hidden = false;
+        p.cursor.highlight = false;
+        p.cursor.ripple = false;
+        p.cursor.keys = false;
+        let tmp2 = dir.path().join("t2");
+        build(&p, &req(Preset::Share), &caps(), Path::new("f.ttf"), &tmp2).unwrap();
+        assert!(!std::fs::read_to_string(tmp2.join("graph.txt"))
+            .unwrap()
+            .contains("[imgcur]"));
+    }
+
+    #[test]
+    fn cursor_segments_follow_the_path_and_stay_small() {
+        // A curved 10 s path sampled at 30 Hz, hidden from 4 s to 5 s.
+        let samples: Vec<(f64, Option<(f64, f64)>)> = (0..=300)
+            .map(|i| {
+                let t = i as f64 / 30.0;
+                let p = (t * 100.0, 300.0 + (t * 1.3).sin() * 200.0);
+                (
+                    t,
+                    if (4.0..5.0).contains(&t) {
+                        None
+                    } else {
+                        Some(p)
+                    },
+                )
+            })
+            .collect();
+        let segs = path_segments(&samples, 1.0);
+        assert!(segs.len() < 120, "{} segments", segs.len());
+        for (t, p) in &samples {
+            match (p, seg_at(&segs, *t)) {
+                (Some(a), Some(b)) => assert!((a.0 - b.0).hypot(a.1 - b.1) <= 1.01, "t {t}"),
+                (None, None) => {}
+                other => panic!("t {t}: {other:?}"),
+            }
+        }
+        let e = seg_expr(&segs, 0, 0.0);
+        assert!(e.starts_with("if(lt(t,0),-10000,if(lt(t,"));
+        // Balanced: nesting depth grows with log2, not with the segment count.
+        let mut depth: i32 = 0;
+        let mut max = 0;
+        for c in e.chars() {
+            if c == '(' {
+                depth += 1;
+                max = max.max(depth);
+            }
+            if c == ')' {
+                depth -= 1;
+            }
+        }
+        assert!(max < 40, "depth {max}");
+        let r = ripple_segments(
+            &[
+                (1.0, (100.0, 100.0)),
+                (1.2, (200.0, 100.0)),
+                (3.0, (50.0, 50.0)),
+            ],
+            20.0,
+            0.35,
+        );
+        assert_eq!(seg_at(&r, 0.5), None);
+        assert_eq!(seg_at(&r, 1.1), Some((90.0, 90.0)));
+        assert_eq!(seg_at(&r, 1.3), Some((190.0, 90.0)));
+        assert_eq!(seg_at(&r, 2.0), None);
+        assert_eq!(seg_at(&r, 3.1), Some((40.0, 40.0)));
     }
 }

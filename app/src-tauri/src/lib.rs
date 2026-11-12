@@ -593,6 +593,10 @@ async fn project_from_recording(
             };
             p.zooms = analysis::auto_zoom(&events, (ox, oy), (sw, sh), 0.5, 2.0);
             p.events = Some(path);
+            p.events_media = p.media.first().map(|m| m.id.clone());
+            p.source_rect = Some([ox, oy, sw, sh]);
+            p.cursor_hidden = m.cursor_hidden;
+            p.cursor.keys = events.iter().any(|e| e.kind == "key");
         }
         project::save(&root, &p)?;
         Ok(p)
@@ -666,6 +670,19 @@ async fn auto_zoom(
             size,
             strength,
             2.0,
+        ))
+    })
+    .await
+}
+
+/// Smoothed cursor path, clicks and keystrokes for the editor preview.
+#[tauri::command]
+async fn cursor_data(events: PathBuf, smoothing: f64) -> Res<analysis::CursorData> {
+    blocking(move || {
+        Ok(analysis::cursor_data(
+            &analysis::read_events(&events),
+            smoothing,
+            30.0,
         ))
     })
     .await
@@ -1002,6 +1019,7 @@ pub fn run() {
             export_start,
             detect_silence,
             auto_zoom,
+            cursor_data,
             waveform,
             thumbnail,
             make_proxy,

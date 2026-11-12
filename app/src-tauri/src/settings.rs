@@ -24,6 +24,8 @@ pub struct Settings {
     pub record_system_audio: bool,
     pub record_camera: bool,
     pub record_keys: bool,
+    #[serde(default = "yes")]
+    pub record_smooth_cursor: bool,
     pub countdown: u32,
     pub default_target_mb: f64,
     pub save_next_to_original: bool,
@@ -54,6 +56,7 @@ impl Default for Settings {
             record_system_audio: true,
             record_camera: false,
             record_keys: false,
+            record_smooth_cursor: true,
             countdown: 3,
             default_target_mb: 25.0,
             save_next_to_original: true,
@@ -90,6 +93,10 @@ pub fn save(path: &Path, s: &Settings) -> Result<(), String> {
 /// every install doesn't ask GitHub at the same minute.
 pub fn update_check_due(s: &Settings, now: u64, jitter_secs: u64) -> bool {
     s.update_mode != "off" && now >= s.last_update_check + 86_400 + jitter_secs.min(3600)
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[cfg(test)]

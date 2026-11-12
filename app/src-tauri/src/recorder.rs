@@ -70,6 +70,9 @@ pub struct RecordOptions {
     pub record_keys: bool,
     pub auto_stop_seconds: Option<u64>,
     pub auto_stop_mb: Option<u64>,
+    /// Leave the cursor out of the video; the editor draws a smooth one from the event log.
+    #[serde(default)]
+    pub separate_cursor: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -91,6 +94,74 @@ pub struct Manifest {
     pub bytes: u64,
     pub encoder: String,
     pub notes: Vec<String>,
+    /// True when the cursor was left out of the video (drawn later by the editor).
+    #[serde(default)]
+    pub cursor_hidden: bool,
+    /// Wall-clock time (Unix seconds) of the first frame of each video segment.
+    #[serde(default)]
+    pub seg_starts: Vec<f64>,
+    /// Audio runs between pauses: (wall-clock start, position in the WAV in seconds).
+    #[serde(default)]
+    pub mic_runs: Vec<(f64, f64)>,
+    #[serde(default)]
+    pub system_runs: Vec<(f64, f64)>,
+    #[serde(default)]
+    pub camera_start: Option<f64>,
+    /// Event times are wall-clock until finalize maps them onto the video.
+    #[serde(default)]
+    pub events_wall: bool,
+    /// Sound, camera and events have been lined up with the video.
+    #[serde(default)]
+    pub synced: bool,
+}
+
+pub fn wall_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// For each video segment, which part of a gated WAV covers it:
+/// (source start, source end, leading silence, segment length), in seconds.
+/// `runs` are (wall start, WAV position) for every stretch recorded between pauses.
+pub fn cut_plan(
+    runs: &[(f64, f64)],
+    file_len: f64,
+    starts: &[f64],
+    durs: &[f64],
+) -> Vec<(f64, f64, f64, f64)> {
+    let mut out = Vec::new();
+    for (i, (&vs, &d)) in starts.iter().zip(durs).enumerate() {
+        // The run belonging to this segment: same index when the counts agree,
+        // otherwise the last run that began before the segment ended.
+        let _ = i;
+        let r = runs.iter().rposition(|(w, _)| *w < vs + d);
+        let Some(r) = r else {
+            out.push((0.0, 0.0, d, d));
+            continue;
+        };
+        let (w, pos) = runs[r];
+        let run_end = runs.get(r + 1).map(|n| n.1).unwrap_or(file_len);
+        let want = pos + (vs - w);
+        let start = want.max(pos).min(run_end);
+        let lead = (pos - want).max(0.0).min(d);
+        let end = (want + d).min(run_end).max(start);
+        out.push((start, end, lead, d));
+    }
+    out
+}
+
+/// Map a wall-clock time onto the joined video (None while paused or outside).
+pub fn remap_wall(t: f64, starts: &[f64], durs: &[f64]) -> Option<f64> {
+    let mut offset = 0.0;
+    for (&vs, &d) in starts.iter().zip(durs) {
+        if t >= vs && t < vs + d {
+            return Some(offset + t - vs);
+        }
+        offset += d;
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +367,12 @@ fn even(v: u32) -> u32 {
     (v / 2 * 2).max(2)
 }
 
+/// The cursor can only be redrawn when its position maps onto the picture:
+/// whole screens and areas, not single windows (their rectangle isn't known).
+pub fn hide_cursor(opts: &RecordOptions) -> bool {
+    opts.separate_cursor && !matches!(opts.source, Source::Window { .. })
+}
+
 pub fn current_os() -> &'static str {
     if cfg!(windows) {
         "windows"
@@ -317,6 +394,13 @@ pub fn segment_args(
     let target = opts.video.map(|v| limits::clamp_video(v).value);
     let fps = target.map(|t| t.fps).unwrap_or(base_fps);
     let (mut a, mut vf) = capture_input(&opts.source, fps, caps, os)?;
+    if hide_cursor(opts) {
+        for i in 0..a.len().saturating_sub(1) {
+            if a[i] == "-draw_mouse" || a[i] == "-capture_cursor" {
+                a[i + 1] = s("0");
+            }
+        }
+    }
     a.insert(0, s("-thread_queue_size"));
     a.insert(1, s("512"));
     if let Some(t) = target {
@@ -350,6 +434,7 @@ struct AudioTrack {
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     level: Arc<AtomicU64>,
+    runs: Arc<Mutex<Vec<(f64, f64)>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -359,8 +444,9 @@ impl AudioTrack {
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let level = Arc::new(AtomicU64::new(0));
+        let runs = Arc::new(Mutex::new(Vec::new()));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-        let (st, pa, lv) = (stop.clone(), paused.clone(), level.clone());
+        let (st, pa, lv, ru) = (stop.clone(), paused.clone(), level.clone(), runs.clone());
         let thread = std::thread::Builder::new()
             .name(format!("alchemist-audio-{kind}"))
             .spawn(move || {
@@ -422,16 +508,48 @@ impl AudioTrack {
                 };
                 let w2 = writer.clone();
                 let (pa2, lv2) = (pa.clone(), lv.clone());
+                let (channels, rate) =
+                    (spec.channels.max(1) as f64, spec.sample_rate.max(1) as f64);
+                // `written` counts samples; a "run" is a stretch between pauses.
+                let mut written: u64 = 0;
+                let mut was_paused = true;
+                let mut run = (0.0f64, 0u64); // (wall start, sample index)
                 let write = move |samples: &mut dyn Iterator<Item = i16>| {
                     if pa2.load(Ordering::Relaxed) {
+                        was_paused = true;
                         return;
                     }
-                    let mut peak: i32 = 0;
-                    if let Some(w) = w2.lock().as_mut() {
-                        for v in samples {
-                            peak = peak.max((v as i32).abs());
-                            let _ = w.write_sample(v);
+                    let buf: Vec<i16> = samples.collect();
+                    let now = wall_now();
+                    // This buffer was captured just before the callback ran.
+                    let buf_start = now - buf.len() as f64 / channels / rate;
+                    let Some(mut guard) = w2.try_lock_for(Duration::from_millis(50)) else {
+                        return;
+                    };
+                    let Some(w) = guard.as_mut() else { return };
+                    if was_paused {
+                        run = (buf_start, written);
+                        ru.lock()
+                            .push((buf_start, written as f64 / channels / rate));
+                        was_paused = false;
+                    } else {
+                        // Loopback devices send nothing during silence: fill the gap
+                        // so the file keeps pace with the clock.
+                        let expected = run.0 + (written - run.1) as f64 / channels / rate;
+                        let gap = buf_start - expected;
+                        if gap > 0.03 {
+                            let n = (gap * rate).round() as u64 * channels as u64;
+                            for _ in 0..n {
+                                let _ = w.write_sample(0i16);
+                            }
+                            written += n;
                         }
+                    }
+                    let mut peak: i32 = 0;
+                    for v in buf {
+                        peak = peak.max((v as i32).abs());
+                        let _ = w.write_sample(v);
+                        written += 1;
                     }
                     lv2.store(peak as u64, Ordering::Relaxed);
                 };
@@ -439,7 +557,7 @@ impl AudioTrack {
                 let sc: cpal::StreamConfig = config.clone().into();
                 let stream = match config.sample_format() {
                     cpal::SampleFormat::F32 => {
-                        let wr = write;
+                        let mut wr = write;
                         device.build_input_stream(
                             &sc,
                             move |d: &[f32], _: &_| {
@@ -452,7 +570,7 @@ impl AudioTrack {
                         )
                     }
                     cpal::SampleFormat::I16 => {
-                        let wr = write;
+                        let mut wr = write;
                         device.build_input_stream(
                             &sc,
                             move |d: &[i16], _: &_| wr(&mut d.iter().copied()),
@@ -461,7 +579,7 @@ impl AudioTrack {
                         )
                     }
                     cpal::SampleFormat::U16 => {
-                        let wr = write;
+                        let mut wr = write;
                         device.build_input_stream(
                             &sc,
                             move |d: &[u16], _: &_| {
@@ -511,6 +629,7 @@ impl AudioTrack {
                 stop,
                 paused,
                 level,
+                runs,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => Err(e),
@@ -533,11 +652,9 @@ impl AudioTrack {
 /// and writes only while a recording is active.
 struct EventSink {
     file: Option<std::fs::File>,
-    start: Instant,
     keys: bool,
     last_move: Instant,
     paused: bool,
-    offset: f64,
 }
 
 static EVENTS: once_cell::sync::Lazy<Mutex<Option<EventSink>>> =
@@ -555,23 +672,24 @@ fn ensure_listener() {
                     if sink.paused {
                         return;
                     }
-                    let t = sink.offset + sink.start.elapsed().as_secs_f64();
+                    // Wall-clock seconds; finalize maps them onto the joined video.
+                    let t = wall_now();
                     let line = match ev.event_type {
                         rdev::EventType::MouseMove { x, y } => {
                             if sink.last_move.elapsed() < Duration::from_millis(33) {
                                 return;
                             }
                             sink.last_move = Instant::now();
-                            format!(r#"{{"t":{t:.3},"type":"move","x":{x:.0},"y":{y:.0}}}"#)
+                            format!(r#"{{"t":{t:.4},"type":"move","x":{x:.0},"y":{y:.0}}}"#)
                         }
                         rdev::EventType::ButtonPress(b) => {
-                            format!(r#"{{"t":{t:.3},"type":"click","button":"{b:?}"}}"#)
+                            format!(r#"{{"t":{t:.4},"type":"click","button":"{b:?}"}}"#)
                         }
                         rdev::EventType::Wheel { delta_x, delta_y } => format!(
-                            r#"{{"t":{t:.3},"type":"scroll","dx":{delta_x},"dy":{delta_y}}}"#
+                            r#"{{"t":{t:.4},"type":"scroll","dx":{delta_x},"dy":{delta_y}}}"#
                         ),
                         rdev::EventType::KeyPress(k) if sink.keys => {
-                            format!(r#"{{"t":{t:.3},"type":"key","key":"{k:?}"}}"#)
+                            format!(r#"{{"t":{t:.4},"type":"key","key":"{k:?}"}}"#)
                         }
                         _ => return,
                     };
@@ -590,6 +708,36 @@ struct Segment {
     child: Child,
     stdin: Option<ChildStdin>,
     path: PathBuf,
+    spawned: f64,
+    /// "start:" FFmpeg reports for the capture input (wall clock for gdigrab/x11grab).
+    reported: Arc<Mutex<Option<f64>>>,
+}
+
+impl Segment {
+    /// Wall-clock time of the first frame: FFmpeg's own timestamp when it is a
+    /// wall-clock one, otherwise the launch time plus typical start-up.
+    fn first_frame(&self) -> f64 {
+        match *self.reported.lock() {
+            Some(t) if (t - self.spawned).abs() < 5.0 => t,
+            _ => self.spawned + 0.07,
+        }
+    }
+}
+
+fn watch_start(line: &str, slot: &Mutex<Option<f64>>) {
+    if slot.lock().is_some() {
+        return;
+    }
+    if let Some(i) = line.find("start: ") {
+        let rest = &line[i + 7..];
+        let num: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(v) = num.parse::<f64>() {
+            *slot.lock() = Some(v);
+        }
+    }
 }
 
 pub struct Session {
@@ -604,6 +752,17 @@ pub struct Session {
     paused_total: f64,
     paused_at: Option<Instant>,
     dropped: Arc<AtomicU64>,
+}
+
+impl Session {
+    fn save_runs(&mut self) {
+        if let Some(t) = &self.mic {
+            self.manifest.mic_runs = t.runs.lock().clone();
+        }
+        if let Some(t) = &self.system {
+            self.manifest.system_runs = t.runs.lock().clone();
+        }
+    }
 }
 
 pub struct Recorder {
@@ -638,14 +797,20 @@ impl Recorder {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        let spawned = wall_now();
         let mut child = cmd.spawn().map_err(|e| FfError::Spawn(e.to_string()))?;
         let stdin = child.stdin.take();
+        let reported = Arc::new(Mutex::new(None));
+        let rep2 = reported.clone();
         if let Some(err) = child.stderr.take() {
             std::thread::spawn(move || {
                 let re = regex::Regex::new(r"drop=\s*(\d+)").unwrap();
                 let mut tail = String::new();
                 for line in BufReader::new(err).split(b'\r').map_while(Result::ok) {
                     let l = String::from_utf8_lossy(&line);
+                    for part in l.lines().filter(|p| p.contains("Duration:")) {
+                        watch_start(part, &rep2);
+                    }
                     if let Some(c) = re.captures(&l) {
                         dropped.store(c[1].parse().unwrap_or(0), Ordering::Relaxed);
                     }
@@ -657,19 +822,28 @@ impl Recorder {
                 log::info!("capture ended: {}", tail.lines().last().unwrap_or(""));
             });
         }
-        // Fail fast if FFmpeg can't open the capture device.
-        std::thread::sleep(Duration::from_millis(600));
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(FfError::Failed(format!(
-                "Screen capture couldn't start (code {}). Check that Alchemist is allowed to record the screen.",
-                status.code().unwrap_or(-1)
-            )));
+        // Fail fast if FFmpeg can't open the capture device; otherwise carry on
+        // as soon as it reports the input (its first frame is on the way).
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(FfError::Failed(format!(
+                    "Screen capture couldn't start (code {}). Check that Alchemist is allowed to record the screen.",
+                    status.code().unwrap_or(-1)
+                )));
+            }
+            if reported.lock().is_some() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(15));
         }
         Ok((
             Segment {
                 child,
                 stdin,
                 path: path.to_path_buf(),
+                spawned,
+                reported,
             },
             enc,
         ))
@@ -701,6 +875,7 @@ impl Recorder {
             .args(&enc)
             .args(["-f", "matroska", "-cluster_time_limit", "1000"])
             .arg(path);
+        let spawned = wall_now();
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -712,6 +887,8 @@ impl Recorder {
             child,
             stdin,
             path: path.to_path_buf(),
+            spawned,
+            reported: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -741,19 +918,12 @@ impl Recorder {
             state: "recording".into(),
             source: Some(opts.source.clone()),
             fps: fps_for(opts.preset),
+            cursor_hidden: hide_cursor(&opts),
             ..Default::default()
         };
         if let Some(v) = opts.video {
             manifest.fps = limits::clamp_video(v).value.fps;
         }
-
-        let dropped = Arc::new(AtomicU64::new(0));
-        let seg_path = dir.join("screen-001.mkv");
-        let (segment, enc) = self
-            .spawn_segment(&opts, &seg_path, dropped.clone())
-            .map_err(|e| e.to_string())?;
-        manifest.encoder = enc;
-        manifest.segments.push("screen-001.mkv".into());
 
         let mic = if opts.mic {
             match AudioTrack::start("mic", dir.join("mic.wav")) {
@@ -783,10 +953,26 @@ impl Recorder {
         } else {
             None
         };
+        let dropped = Arc::new(AtomicU64::new(0));
+        let seg_path = dir.join("screen-001.mkv");
+        let (segment, enc) = match self.spawn_segment(&opts, &seg_path, dropped.clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                for t in [mic, system].into_iter().flatten() {
+                    t.finish();
+                }
+                return Err(e.to_string());
+            }
+        };
+        manifest.encoder = enc;
+        manifest.segments.push("screen-001.mkv".into());
+        manifest.seg_starts.push(segment.first_frame());
+
         let camera = if opts.camera {
             let c = self.spawn_camera(&dir.join("camera.mkv"));
-            if c.is_some() {
+            if let Some(cam) = &c {
                 manifest.camera = Some("camera.mkv".into());
+                manifest.camera_start = Some(cam.first_frame() + 0.4);
             } else {
                 manifest
                     .notes
@@ -800,13 +986,12 @@ impl Recorder {
         ensure_listener();
         if let Ok(f) = std::fs::File::create(dir.join("events.jsonl")) {
             manifest.events = Some("events.jsonl".into());
+            manifest.events_wall = true;
             *EVENTS.lock() = Some(EventSink {
                 file: Some(f),
-                start: Instant::now(),
                 keys: opts.record_keys,
                 last_move: Instant::now(),
                 paused: false,
-                offset: 0.0,
             });
         }
 
@@ -844,6 +1029,8 @@ impl Recorder {
             e.paused = true;
         }
         s.paused_at = Some(Instant::now());
+        s.save_runs();
+        write_manifest(&s.dir, &s.manifest);
         Ok(())
     }
 
@@ -858,6 +1045,7 @@ impl Recorder {
         let (seg, _) = self
             .spawn_segment(&s.opts, &s.dir.join(&name), s.dropped.clone())
             .map_err(|e| e.to_string())?;
+        s.manifest.seg_starts.push(seg.first_frame());
         s.segment = Some(seg);
         s.manifest.segments.push(name);
         for t in [&s.mic, &s.system].into_iter().flatten() {
@@ -960,6 +1148,11 @@ impl Recorder {
         if let Some(c) = s.camera.take() {
             stop_segment(c);
         }
+        // Stop the sound first so its last buffers are counted, then keep the runs.
+        for t in [&s.mic, &s.system].into_iter().flatten() {
+            t.paused.store(true, Ordering::Relaxed);
+        }
+        s.save_runs();
         if let Some(m) = s.mic.take() {
             m.finish();
         }
@@ -1017,6 +1210,159 @@ pub fn write_manifest(dir: &Path, m: &Manifest) {
     }
 }
 
+/// Cut sound and camera to exactly the stretches the video covers, and move
+/// the input log onto video time. Every source was stamped with wall-clock
+/// times, so pauses and start-up delays line up to the frame.
+fn sync_tracks(dir: &Path, m: &mut Manifest, starts: &[f64], durs: &[f64]) {
+    use std::fmt::Write as _;
+    for (file, runs) in [
+        (m.mic.clone(), m.mic_runs.clone()),
+        (m.system_audio.clone(), m.system_runs.clone()),
+    ] {
+        let Some(file) = file else { continue };
+        let path = dir.join(&file);
+        if !path.exists() {
+            continue;
+        }
+        let len = ffmpeg::probe(&path).map(|i| i.duration).unwrap_or(0.0);
+        let total: f64 = durs.iter().sum();
+        if runs.is_empty() || len < 0.01 {
+            // Nothing arrived (a silent loopback device): a silent track of the right length.
+            let spec = hound::WavReader::open(&path).map(|r| r.spec()).ok();
+            let (ch, sr) = spec
+                .map(|s| (s.channels, s.sample_rate))
+                .unwrap_or((2, 48000));
+            let _ = ffmpeg::run_capture_stderr(&[
+                "-y".into(),
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                format!(
+                    "anullsrc=r={sr}:cl={}",
+                    if ch == 1 { "mono" } else { "stereo" }
+                ),
+                "-t".into(),
+                format!("{total:.4}"),
+                "-c:a".into(),
+                "pcm_s16le".into(),
+                dir.join(format!("{file}.sync.wav"))
+                    .to_string_lossy()
+                    .to_string(),
+            ])
+            .map(|_| std::fs::rename(dir.join(format!("{file}.sync.wav")), &path));
+            continue;
+        }
+        let plan = cut_plan(&runs, len, starts, durs);
+        let mut g = String::new();
+        for (i, (a, b, lead, d)) in plan.iter().enumerate() {
+            let a = a.min((len - 0.01).max(0.0));
+            let b = if b - a < 0.002 { a + 0.002 } else { *b };
+            let _ = write!(
+                g,
+                "[0:a]atrim=start={a:.4}:end={b:.4},asetpts=PTS-STARTPTS,adelay={}:all=1,apad=whole_dur={d:.4},atrim=end={d:.4}[a{i}];",
+                (lead * 1000.0).round() as i64
+            );
+        }
+        for i in 0..plan.len() {
+            let _ = write!(g, "[a{i}]");
+        }
+        let _ = write!(g, "concat=n={}:v=0:a=1[out]", plan.len());
+        let tmp = dir.join(format!("{file}.sync.wav"));
+        let ok = ffmpeg::run_capture_stderr(&[
+            "-y".into(),
+            "-i".into(),
+            path.to_string_lossy().to_string(),
+            "-filter_complex".into(),
+            g,
+            "-map".into(),
+            "[out]".into(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            tmp.to_string_lossy().to_string(),
+        ]);
+        match ok {
+            Ok(_) => {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                m.notes
+                    .push(format!("Couldn't line up {file} with the video: {e}"));
+            }
+        }
+    }
+    if let (Some(cam), Some(c0)) = (m.camera.clone(), m.camera_start) {
+        let path = dir.join(&cam);
+        if path.exists() {
+            let len = ffmpeg::probe(&path).map(|i| i.duration).unwrap_or(0.0);
+            let plan = cut_plan(&[(c0, 0.0)], len, starts, durs);
+            let mut g = String::new();
+            for (i, (a, b, lead, d)) in plan.iter().enumerate() {
+                let b = if b - a < 0.05 { a + 0.05 } else { *b };
+                let _ = write!(
+                    g,
+                    "[0:v]trim=start={a:.4}:end={b:.4},setpts=PTS-STARTPTS,tpad=start_duration={lead:.4}:start_mode=clone:stop_mode=clone:stop_duration={d:.4},trim=end={d:.4},setpts=PTS-STARTPTS[v{i}];"
+                );
+            }
+            for i in 0..plan.len() {
+                let _ = write!(g, "[v{i}]");
+            }
+            let _ = write!(g, "concat=n={}:v=1:a=0[out]", plan.len());
+            let tmp = dir.join("camera.sync.mkv");
+            if ffmpeg::run_capture_stderr(&[
+                "-y".into(),
+                "-i".into(),
+                path.to_string_lossy().to_string(),
+                "-filter_complex".into(),
+                g,
+                "-map".into(),
+                "[out]".into(),
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "veryfast".into(),
+                "-crf".into(),
+                "23".into(),
+                tmp.to_string_lossy().to_string(),
+            ])
+            .is_ok()
+            {
+                let _ = std::fs::rename(&tmp, &path);
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    if m.events_wall {
+        remap_events(dir, m, starts, durs);
+    }
+}
+
+/// Rewrite the input log from wall-clock times to video times.
+fn remap_events(dir: &Path, m: &mut Manifest, starts: &[f64], durs: &[f64]) {
+    let Some(ev) = m.events.clone() else { return };
+    let path = dir.join(ev);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let mut out = String::new();
+    for line in text.lines() {
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(t) = v.get("t").and_then(|t| t.as_f64()) else {
+            continue;
+        };
+        if let Some(nt) = remap_wall(t, starts, durs) {
+            v["t"] = serde_json::json!((nt * 1000.0).round() / 1000.0);
+            out.push_str(&v.to_string());
+            out.push('\n');
+        }
+    }
+    let _ = std::fs::write(&path, out);
+    m.events_wall = false;
+}
+
 /// Join segments (stream copy) into `screen.mkv` and record final sizes.
 pub fn finalize(dir: &Path, m: &mut Manifest) -> Result<(), FfError> {
     let existing: Vec<String> = m
@@ -1033,6 +1379,27 @@ pub fn finalize(dir: &Path, m: &mut Manifest) -> Result<(), FfError> {
     if existing.is_empty() {
         return Err(FfError::Failed("Nothing was recorded.".into()));
     }
+    // Segment lengths, measured before they're joined (for lining up sound and events).
+    let durs: Vec<f64> = existing
+        .iter()
+        .map(|s| {
+            ffmpeg::probe(&dir.join(s))
+                .map(|i| i.duration)
+                .unwrap_or(0.0)
+        })
+        .collect();
+    let starts: Option<Vec<f64>> = if m.seg_starts.len() == m.segments.len() {
+        Some(
+            m.segments
+                .iter()
+                .zip(&m.seg_starts)
+                .filter(|(s, _)| existing.contains(s))
+                .map(|(_, t)| *t)
+                .collect(),
+        )
+    } else {
+        None
+    };
     let video = if existing.len() == 1 {
         existing[0].clone()
     } else {
@@ -1068,6 +1435,15 @@ pub fn finalize(dir: &Path, m: &mut Manifest) -> Result<(), FfError> {
         if dir.join(&cam).exists() {
             m.camera = Some(remux_to_mp4(dir, &cam).unwrap_or(cam));
         }
+    }
+    if !m.synced {
+        if let Some(starts) = starts.filter(|s| s.len() == durs.len()) {
+            sync_tracks(dir, m, &starts, &durs);
+        } else if m.events_wall {
+            // No segment times (very old or broken manifest): start the log at the video start.
+            remap_events(dir, m, &[m.started_unix as f64], &[f64::MAX / 4.0]);
+        }
+        m.synced = true;
     }
     let info = ffmpeg::probe(&dir.join(&video)).unwrap_or_default();
     m.duration = info.duration;
@@ -1250,6 +1626,7 @@ mod tests {
             record_keys: false,
             auto_stop_seconds: None,
             auto_stop_mb: None,
+            separate_cursor: false,
         }
     }
 
@@ -1342,6 +1719,69 @@ mod tests {
             .0
             .join(" ");
         assert!(j.contains("-framerate 240") && j.contains("scale=7680:72"));
+    }
+
+    #[test]
+    fn sound_is_cut_to_match_each_video_segment() {
+        // Video: 0-2 s from wall 100.0, paused, then 2 s from wall 110.0.
+        let starts = [100.0, 110.0];
+        let durs = [2.0, 2.0];
+        // Audio started 0.3 s late; after resume it started 0.1 s early.
+        let runs = [(100.3, 0.0), (109.9, 1.9)];
+        let p = cut_plan(&runs, 4.1, &starts, &durs);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(
+            close(p[0].0, 0.0) && close(p[0].1, 1.7) && close(p[0].2, 0.3) && close(p[0].3, 2.0),
+            "{p:?}"
+        );
+        assert!(
+            close(p[1].0, 2.0) && close(p[1].1, 4.0) && close(p[1].2, 0.0),
+            "{p:?}"
+        );
+        // Events map onto the joined video and vanish while paused.
+        assert_eq!(remap_wall(101.0, &starts, &durs), Some(1.0));
+        assert_eq!(remap_wall(105.0, &starts, &durs), None);
+        assert!(close(remap_wall(111.5, &starts, &durs).unwrap(), 3.5));
+        let mut slot = Mutex::new(None);
+        watch_start(
+            "  Duration: N/A, start: 1794482646.067000, bitrate: N/A",
+            &slot,
+        );
+        assert_eq!(*slot.get_mut(), Some(1794482646.067));
+    }
+
+    #[test]
+    fn separate_cursor_is_left_out_of_the_capture() {
+        let mut o = opts(Source::Screen {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        });
+        o.separate_cursor = true;
+        let w = segment_args(&o, &caps(None), Path::new("s.mkv"), "windows")
+            .unwrap()
+            .0
+            .join(" ");
+        assert!(w.contains("-draw_mouse 0"));
+        let m = segment_args(&o, &caps(None), Path::new("s.mkv"), "macos")
+            .unwrap()
+            .0
+            .join(" ");
+        assert!(m.contains("-capture_cursor 0"));
+        let mut win = opts(Source::Window {
+            title: "App".into(),
+        });
+        win.separate_cursor = true;
+        assert!(!hide_cursor(&win));
+        assert!(
+            segment_args(&win, &caps(None), Path::new("s.mkv"), "windows")
+                .unwrap()
+                .0
+                .join(" ")
+                .contains("-draw_mouse 1")
+        );
     }
 
     #[test]

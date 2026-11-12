@@ -409,6 +409,25 @@ fn project_export_renders_everything() {
         text: "A caption".into(),
     });
 
+    // Smooth cursor, click ripple, highlight and keystrokes from an event log.
+    let ev = dir.join("events.jsonl");
+    std::fs::write(
+        &ev,
+        "{\"t\":0.0,\"type\":\"move\",\"x\":100,\"y\":100}
+{\"t\":1.0,\"type\":\"move\",\"x\":900,\"y\":500}
+{\"t\":1.2,\"type\":\"click\"}
+{\"t\":1.5,\"type\":\"key\",\"key\":\"ControlLeft\"}
+{\"t\":1.6,\"type\":\"key\",\"key\":\"KeyS\"}
+{\"t\":3.0,\"type\":\"move\",\"x\":300,\"y\":200}
+",
+    )
+    .unwrap();
+    p.events = Some(ev);
+    p.events_media = Some("m".into());
+    p.source_rect = Some([0.0, 0.0, 1280.0, 720.0]);
+    p.cursor_hidden = true;
+    p.cursor.highlight = true;
+
     let total = p.duration();
     assert!((total - 5.0).abs() < 1e-6, "total {total}");
 
@@ -687,7 +706,8 @@ fn real_screen_recording() {
             height: 600,
             screen_index: 0,
         },
-        mic: false,
+        // Set ALCHEMIST_TEST_MIC=1 to include the microphone.
+        mic: std::env::var("ALCHEMIST_TEST_MIC").is_ok(),
         system_audio: true,
         camera: false,
         preset: recorder::Preset::Tutorial,
@@ -695,6 +715,7 @@ fn real_screen_recording() {
         record_keys: false,
         auto_stop_seconds: None,
         auto_stop_mb: None,
+        separate_cursor: true,
     };
     let started = r.start(opts).expect("recording starts");
     std::thread::sleep(Duration::from_millis(1500));
@@ -717,12 +738,41 @@ fn real_screen_recording() {
     let info = ffmpeg::probe(&video).unwrap();
     assert_eq!((info.width, info.height), (800, 600));
     assert!(
-        info.duration > 2.0 && info.duration < 4.5,
+        info.duration > 2.5 && info.duration < 3.8,
         "video duration {}",
         info.duration
     );
     assert!(dir.join("events.jsonl").exists());
+    assert!(m.synced && !m.events_wall);
+    assert_eq!(m.seg_starts.len(), 2);
+    // Everything ends up on video time.
+    for line in std::fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+    {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let t = v["t"].as_f64().unwrap();
+        assert!((0.0..=info.duration + 0.05).contains(&t), "event at {t}");
+    }
+    if let Some(mic) = &m.mic {
+        let a = ffmpeg::probe(&dir.join(mic)).unwrap().duration;
+        assert!(
+            (a - info.duration).abs() < 0.1,
+            "mic {a} vs video {}",
+            info.duration
+        );
+    }
     if let Some(sys) = &m.system_audio {
         assert!(hound::WavReader::open(dir.join(sys)).is_ok());
+        let a = ffmpeg::probe(&dir.join(sys)).unwrap().duration;
+        eprintln!(
+            "video {:.3} s, sound {:.3} s, runs {:?}, starts {:?}",
+            info.duration, a, m.system_runs, m.seg_starts
+        );
+        assert!(
+            (a - info.duration).abs() < 0.1,
+            "sound {a} vs video {}",
+            info.duration
+        );
     }
 }

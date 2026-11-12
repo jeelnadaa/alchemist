@@ -71,6 +71,192 @@ pub struct InputEvent {
     pub x: Option<f64>,
     #[serde(default)]
     pub y: Option<f64>,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+/// Everything the editor and export need to draw the cursor, in source time
+/// and screen pixels. Computed once here so preview and export agree.
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorData {
+    /// Smoothed position sampled at `rate` Hz: (t, x, y).
+    pub path: Vec<(f64, f64, f64)>,
+    pub rate: f64,
+    pub clicks: Vec<(f64, f64, f64)>,
+    /// Grouped keystrokes: (start, end, label).
+    pub keys: Vec<(f64, f64, String)>,
+}
+
+/// Smooth the cursor: follow the raw path with an exponential lag of up to
+/// 0.25 s (smoothing 0..1), sampled at `rate` Hz.
+pub fn cursor_data(events: &[InputEvent], smoothing: f64, rate: f64) -> CursorData {
+    let mut moves: Vec<(f64, f64, f64)> = Vec::new();
+    let mut clicks = Vec::new();
+    let mut last = None;
+    for e in events {
+        if let (Some(x), Some(y)) = (e.x, e.y) {
+            moves.push((e.t, x, y));
+            last = Some((x, y));
+        }
+        if e.kind == "click" {
+            if let Some((x, y)) = last {
+                clicks.push((e.t, x, y));
+            }
+        }
+    }
+    let mut path = Vec::new();
+    if !moves.is_empty() {
+        let tau = smoothing.clamp(0.0, 1.0) * 0.25;
+        let end = moves
+            .last()
+            .unwrap()
+            .0
+            .max(events.last().map(|e| e.t).unwrap_or(0.0))
+            + 0.5;
+        let dt = 1.0 / rate;
+        let (mut x, mut y) = (moves[0].1, moves[0].2);
+        let mut j = 0;
+        let mut t = 0.0;
+        while t <= end {
+            while j + 1 < moves.len() && moves[j + 1].0 <= t {
+                j += 1;
+            }
+            let target = if moves[j].0 > t {
+                (moves[j].1, moves[j].2)
+            } else if j + 1 < moves.len() {
+                let (a, b) = (moves[j], moves[j + 1]);
+                let f = ((t - a.0) / (b.0 - a.0).max(1e-6)).clamp(0.0, 1.0);
+                (a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f)
+            } else {
+                (moves[j].1, moves[j].2)
+            };
+            let k = if tau <= 1e-6 {
+                1.0
+            } else {
+                1.0 - (-dt / tau).exp()
+            };
+            x += (target.0 - x) * k;
+            y += (target.1 - y) * k;
+            path.push((t, x, y));
+            t += dt;
+        }
+    }
+    CursorData {
+        path,
+        rate,
+        clicks,
+        keys: key_groups(events),
+    }
+}
+
+/// Position on the smoothed path at source time t.
+pub fn cursor_at(d: &CursorData, t: f64) -> Option<(f64, f64)> {
+    if d.path.is_empty() || t < 0.0 || t > d.path[d.path.len() - 1].0 + 1.0 / d.rate {
+        return None;
+    }
+    let i = ((t * d.rate).floor().max(0.0) as usize).min(d.path.len() - 1);
+    let a = d.path[i];
+    let b = d.path[(i + 1).min(d.path.len() - 1)];
+    let f = ((t - a.0) * d.rate).clamp(0.0, 1.0);
+    Some((a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f))
+}
+
+fn key_label(k: &str) -> (String, bool) {
+    // rdev names: KeyA, Num1, ControlLeft, ShiftRight, MetaLeft, Space, Return…
+    let modifier = |n: &str| {
+        [
+            "ControlLeft",
+            "ControlRight",
+            "ShiftLeft",
+            "ShiftRight",
+            "Alt",
+            "AltGr",
+            "MetaLeft",
+            "MetaRight",
+        ]
+        .contains(&n)
+    };
+    let label = match k {
+        k if k.starts_with("Key") && k.len() == 4 => k[3..].to_string(),
+        k if k.starts_with("Num") && k.len() == 4 => k[3..].to_string(),
+        "ControlLeft" | "ControlRight" => "Ctrl".into(),
+        "ShiftLeft" | "ShiftRight" => "Shift".into(),
+        "Alt" | "AltGr" => "Alt".into(),
+        "MetaLeft" | "MetaRight" => {
+            if cfg!(target_os = "macos") {
+                "Cmd".into()
+            } else {
+                "Win".into()
+            }
+        }
+        "Return" => "Enter".into(),
+        "Escape" => "Esc".into(),
+        "Backspace" => "Backspace".into(),
+        "Space" => "Space".into(),
+        "Tab" => "Tab".into(),
+        "UpArrow" => "Up".into(),
+        "DownArrow" => "Down".into(),
+        "LeftArrow" => "Left".into(),
+        "RightArrow" => "Right".into(),
+        other => other
+            .trim_start_matches("Unknown(")
+            .trim_end_matches(')')
+            .to_string(),
+    };
+    (label, modifier(k))
+}
+
+/// Group keystrokes into short labels: shortcuts ("Ctrl + S") show on their own,
+/// plain typing within a second joins into one line.
+pub fn key_groups(events: &[InputEvent]) -> Vec<(f64, f64, String)> {
+    let mut out: Vec<(f64, f64, String)> = Vec::new();
+    let mut held: Vec<String> = Vec::new();
+    let mut last_mod_t = -10.0;
+    for e in events.iter().filter(|e| e.kind == "key") {
+        let Some(k) = &e.key else { continue };
+        let (label, is_mod) = key_label(k);
+        if is_mod {
+            if e.t - last_mod_t > 1.0 {
+                held.clear();
+            }
+            if !held.contains(&label) {
+                held.push(label);
+            }
+            last_mod_t = e.t;
+            continue;
+        }
+        let combo = !held.is_empty()
+            && e.t - last_mod_t <= 1.0
+            && !(held.len() == 1 && held[0] == "Shift" && label.len() == 1);
+        if combo {
+            out.push((e.t, e.t + 1.2, format!("{} + {label}", held.join(" + "))));
+            held.clear();
+            continue;
+        }
+        held.clear();
+        let piece = if label == "Space" {
+            " ".to_string()
+        } else if label.len() == 1 {
+            label.to_lowercase()
+        } else {
+            format!(" {label} ")
+        };
+        match out.last_mut() {
+            Some(last)
+                if !last.2.contains(" + ") && e.t - (last.1 - 1.2) <= 1.0 && last.2.len() < 40 =>
+            {
+                last.2.push_str(&piece);
+                last.1 = e.t + 1.2;
+            }
+            _ => out.push((e.t, e.t + 1.2, piece.trim().to_string())),
+        }
+    }
+    for g in &mut out {
+        g.2 = g.2.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    out.retain(|g| !g.2.is_empty());
+    out
 }
 
 pub fn read_events(path: &Path) -> Vec<InputEvent> {
@@ -319,30 +505,35 @@ mod tests {
                 kind: "move".into(),
                 x: Some(1600.0),
                 y: Some(900.0),
+                key: None,
             },
             InputEvent {
                 t: 2.0,
                 kind: "click".into(),
                 x: None,
                 y: None,
+                key: None,
             },
             InputEvent {
                 t: 3.0,
                 kind: "click".into(),
                 x: None,
                 y: None,
+                key: None,
             },
             InputEvent {
                 t: 20.0,
                 kind: "move".into(),
                 x: Some(100.0),
                 y: Some(100.0),
+                key: None,
             },
             InputEvent {
                 t: 20.5,
                 kind: "click".into(),
                 x: None,
                 y: None,
+                key: None,
             },
         ];
         let z = auto_zoom(&ev, (0.0, 0.0), (1920.0, 1080.0), 0.5, 2.0);
@@ -351,6 +542,52 @@ mod tests {
         assert!((z[0].x - 1600.0 / 1920.0).abs() < 1e-9);
         assert!(z[1].x < 0.1);
         assert!(z[0].scale > 1.5);
+    }
+
+    fn ev(t: f64, kind: &str, x: Option<f64>, y: Option<f64>, key: Option<&str>) -> InputEvent {
+        InputEvent {
+            t,
+            kind: kind.into(),
+            x,
+            y,
+            key: key.map(String::from),
+        }
+    }
+
+    #[test]
+    fn cursor_path_smooths_and_samples() {
+        let e = vec![
+            ev(0.0, "move", Some(0.0), Some(0.0), None),
+            ev(1.0, "move", Some(100.0), Some(50.0), None),
+            ev(1.2, "click", None, None, None),
+        ];
+        let raw = cursor_data(&e, 0.0, 30.0);
+        assert_eq!(cursor_at(&raw, 0.5).map(|p| p.0.round()), Some(50.0));
+        let smooth = cursor_data(&e, 1.0, 30.0);
+        let (sx, _) = cursor_at(&smooth, 0.5).unwrap();
+        assert!(sx < 45.0, "smoothing lags behind: {sx}");
+        let (fx, fy) = cursor_at(&smooth, 1.6).unwrap();
+        assert!((fx - 100.0).abs() < 15.0 && (fy - 50.0).abs() < 8.0);
+        assert_eq!(raw.clicks, vec![(1.2, 100.0, 50.0)]);
+        assert!(cursor_data(&[], 0.5, 30.0).path.is_empty());
+    }
+
+    #[test]
+    fn keystrokes_become_readable_labels() {
+        let e = vec![
+            ev(1.0, "key", None, None, Some("ControlLeft")),
+            ev(1.1, "key", None, None, Some("KeyS")),
+            ev(3.0, "key", None, None, Some("KeyH")),
+            ev(3.2, "key", None, None, Some("KeyI")),
+            ev(3.4, "key", None, None, Some("Space")),
+            ev(3.6, "key", None, None, Some("KeyY")),
+            ev(9.0, "key", None, None, Some("Return")),
+        ];
+        let g = key_groups(&e);
+        assert_eq!(g[0].2, "Ctrl + S");
+        assert_eq!(g[1].2, "hi y");
+        assert_eq!(g[2].2, "Enter");
+        assert!((g[1].1 - 4.8).abs() < 1e-9);
     }
 
     #[test]
