@@ -1,0 +1,18 @@
+// Same site, for a Cloudflare project whose root directory is "site".
+// (With the repository root as the root directory, ../wrangler.jsonc is used.)
+{
+  "name": "alchemist",
+  "main": "_worker.js",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": ".",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    "GITHUB_REPO": "jeelnadaa/alchemist"
+  },
+  "observability": { "enabled": true }
+}

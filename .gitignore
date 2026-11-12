@@ -8,3 +8,5 @@ app/src-tauri/gen/
 .DS_Store
 release-assets/
 .claude/
+.wrangler/
+.wrangler-dry/

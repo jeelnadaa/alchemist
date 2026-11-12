@@ -1,6 +1,6 @@
 /* Single place to point the site at the GitHub repository that publishes releases.
-   The Cloudflare Pages Function reads the GITHUB_REPO environment variable instead,
-   so set both when the repository is created. */
+   The site worker (site/_worker.js) reads GITHUB_REPO from wrangler.jsonc instead,
+   so keep both in step. */
 window.ALCHEMIST_CONFIG = {
   repo: "jeelnadaa/alchemist",
 };

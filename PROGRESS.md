@@ -95,7 +95,7 @@ Bugs the end-to-end tests caught and fixed: text fades used a 3-argument `min()`
 - 🟡 Update rollback: the installer is atomic, but keeping the previous version for automatic rollback isn't implemented
 - ✅ Versioned project format with migration; originals never touched
 - ✅ Local-only crash reports
-- ✅ Website (landing + download pages) on Cloudflare Pages
+- ✅ Website (landing + download pages) on Cloudflare Workers static assets (`wrangler.jsonc`, `site/_worker.js` for `/api/latest`), Satoshi self-hosted
 - ✅ Production-grade UI redesign: specular rim lighting, glassmorphism, zero-runtime-cost native CSS tooltips, streamlined 72px rail navigation, and Raycast-style search bar
 
 ### Phase 1 exit criteria

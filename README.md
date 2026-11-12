@@ -37,7 +37,7 @@ Verify downloads against `SHA256SUMS.txt` in each release.
 - **Closing the window frees the web view.** Recording, background jobs and the global hotkey keep running in a small tray process.
 - **No framework UI**: plain TypeScript, each screen loaded only when opened.
 
-Layout: `app/src` (UI), `app/src-tauri/src` (Rust core), `site/` (website on Cloudflare Pages), `scripts/` (build and release tooling), `PLAN.md` (product plan), `PROGRESS.md` (what's done and what's next).
+Layout: `app/src` (UI), `app/src-tauri/src` (Rust core), `site/` (website on Cloudflare Workers, see `wrangler.jsonc`), `scripts/` (build and release tooling), `PLAN.md` (product plan), `PROGRESS.md` (what's done and what's next).
 
 ## Develop
 

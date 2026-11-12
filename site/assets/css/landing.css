@@ -376,3 +376,6 @@ html.no-motion .private__text .split-word { opacity: 1; }
 .final__title { margin: 0; font-family: var(--f-display); font-style: italic; font-weight: 400; letter-spacing: -0.04em; line-height: 0.9; font-size: clamp(76px, 17vw, 260px); }
 .final__title span { display: inline-block; background: var(--grad-accent); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; padding: 0 0.08em; }
 .final__os { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 26px; font-size: 12px; color: var(--dim); margin-top: 10px; }
+
+/* Decorative glows and orbits never widen the page on phones. */
+.final, .section.updates { overflow-x: clip; }

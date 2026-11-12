@@ -1,0 +1,19 @@
+// Cloudflare Workers: serves the landing and download pages in ./site.
+// Deploy: `npx wrangler deploy` (or connect the repo in Workers & Pages;
+// the build runs the same command). Root directory: the repository root.
+{
+  "name": "alchemist",
+  "main": "site/_worker.js",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    "GITHUB_REPO": "jeelnadaa/alchemist"
+  },
+  "observability": { "enabled": true }
+}

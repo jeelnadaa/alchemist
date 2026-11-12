@@ -55,4 +55,10 @@ Commit with conventional messages (`fix:`, `feat:`, `feat!:`). Pushing to `main`
 
 ## Website
 
-`site/` is deployed by Cloudflare Pages straight from the repository (root directory `site`, no build command). Set the Pages environment variable `GITHUB_REPO=jeelnadaa/alchemist`.
+`site/` is the website (landing and download pages). It deploys to Cloudflare Workers with static assets:
+
+- Connected repository (Workers & Pages → your Worker → Settings → Build): root directory `/`, build command empty, deploy command `npx wrangler deploy`. `wrangler.jsonc` at the root points at `site/`. (If the root directory is `site`, `site/wrangler.jsonc` is used instead.)
+- From your machine: `npx wrangler login`, then `npx wrangler deploy`.
+- Preview locally: `npx wrangler dev`, then open http://localhost:8787.
+
+`site/_worker.js` serves `/api/latest` (the latest GitHub release, cached at the edge) and hands everything else to the static files. `GITHUB_REPO` is set in `wrangler.jsonc`; add a `GITHUB_TOKEN` secret (`npx wrangler secret put GITHUB_TOKEN`) only if you hit GitHub's rate limit. The same `_worker.js` also works on Cloudflare Pages.

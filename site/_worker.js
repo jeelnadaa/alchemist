@@ -1,13 +1,14 @@
 /**
- * Cloudflare Pages Function: GET /api/latest
+ * Alchemist website worker (Cloudflare Workers static assets, or Pages
+ * "advanced mode" — the same file works for both).
  *
- * Fetches the latest GitHub Release server-side, caches it at the edge,
- * and returns a small normalized JSON document for the download page.
+ *   GET /api/latest  latest GitHub Release, normalized and cached at the edge
+ *   everything else  the static site in this folder (env.ASSETS)
  *
- * Environment (Pages → Settings → Variables):
- *   GITHUB_REPO   "owner/repo"            (required)
- *   GITHUB_TOKEN  fine-grained read token (optional; raises rate limits)
+ * Variables (optional): GITHUB_REPO "owner/repo", GITHUB_TOKEN read token.
  */
+
+const DEFAULT_REPO = "jeelnadaa/alchemist";
 
 const CACHE_SECONDS = 300;
 
@@ -46,9 +47,9 @@ function json(body, status = 200, maxAge = CACHE_SECONDS) {
   });
 }
 
-export async function onRequestGet(context) {
+async function latest(context) {
   const { env, request, waitUntil } = context;
-  const repo = env.GITHUB_REPO;
+  const repo = env.GITHUB_REPO || DEFAULT_REPO;
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
     return json({ status: "unconfigured" }, 200, 60);
   }
@@ -119,3 +120,17 @@ export async function onRequestGet(context) {
   waitUntil(cache.put(cacheKey, out.clone()));
   return out;
 }
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname === "/api/latest" || url.pathname === "/api/latest/") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+      }
+      return latest({ env, request, waitUntil: (p) => ctx.waitUntil(p) });
+    }
+    if (url.pathname.startsWith("/api/")) return json({ status: "not_found" }, 404, 60);
+    return env.ASSETS.fetch(request);
+  },
+};
