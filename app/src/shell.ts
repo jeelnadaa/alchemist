@@ -30,9 +30,9 @@ export function buildShell(): Shell {
   const brand = h("div", { class: "brand" }, logo(22), "Alchemist");
   const crumbs = h("div", { class: "crumbs hidden" });
   const left = h("div", { style: { minWidth: "220px", display: "flex", alignItems: "center" } }, brand, crumbs);
-  const search = h("button", { type: "button", class: "searchbar", onclick: () => openPalette(), "aria-label": "Search actions, files and settings" },
+  const search = h("button", { type: "button", class: "searchbar", onclick: () => openPalette(), "aria-label": "Search actions, files and settings", "data-tooltip": "Search actions, files and settings", "data-tooltip-pos": "bottom" },
     icon("search", 16), h("span", { class: "grow" }, "Search actions, files and settings"), h("span", { class: "kbd" }, navigator.platform.includes("Mac") ? "⌘ K" : "Ctrl K"));
-  const jobChip = h("button", { type: "button", class: "jobchip hidden", onclick: () => openJobs() });
+  const jobChip = h("button", { type: "button", class: "jobchip hidden", onclick: () => openJobs(), "data-tooltip": "Active background jobs", "data-tooltip-pos": "bottom" });
   const rightSlot = h("div", { class: "row" });
   const right = h("div", { class: "title-right" }, jobChip, rightSlot);
   const titlebar = h("header", { class: "titlebar" }, left, search, right);
@@ -40,7 +40,7 @@ export function buildShell(): Shell {
   const links = new Map<string, HTMLAnchorElement>();
   const rail = h("nav", { class: "rail", "aria-label": "Main" });
   for (const [route, label, ic] of NAV) {
-    const a = h("a", { href: `#/${route}` }, icon(ic, 22), label) as HTMLAnchorElement;
+    const a = h("a", { href: `#/${route}`, "data-tooltip": label, "data-tooltip-pos": "right" }, icon(ic, 22), label) as HTMLAnchorElement;
     if (route === "edit") {
       a.addEventListener("click", (e) => {
         e.preventDefault();
@@ -52,7 +52,7 @@ export function buildShell(): Shell {
     rail.appendChild(a);
   }
   rail.appendChild(h("div", { class: "spacer" }));
-  const settingsLink = h("a", { href: "#/settings/appearance" }, icon("settings", 22), "Settings") as HTMLAnchorElement;
+  const settingsLink = h("a", { href: "#/settings/appearance", "data-tooltip": "Settings", "data-tooltip-pos": "right" }, icon("settings", 22), "Settings") as HTMLAnchorElement;
   links.set("settings", settingsLink);
   rail.appendChild(settingsLink);
 

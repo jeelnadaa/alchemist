@@ -77,7 +77,7 @@ export async function mount(shell: Shell) {
   });
 
   const pill = (label: string, ic: Parameters<typeof icon>[0], key: "mic" | "systemAudio" | "camera", offLabel: string) => {
-    const b = h("button", { type: "button", class: "pill", "aria-pressed": String(opts[key]) }, icon(ic, 18), h("span", null, opts[key] ? label : offLabel));
+    const b = h("button", { type: "button", class: "pill", "aria-pressed": String(opts[key]), "data-tooltip": `Toggle ${label}`, "data-tooltip-pos": "top" }, icon(ic, 18), h("span", null, opts[key] ? label : offLabel));
     b.addEventListener("click", () => {
       opts[key] = !opts[key];
       b.setAttribute("aria-pressed", String(opts[key]));
@@ -88,7 +88,7 @@ export async function mount(shell: Shell) {
     return b;
   };
 
-  const qualityBtn = h("button", { type: "button", class: "pill", style: { flexDirection: "column", alignItems: "flex-start", gap: "0", lineHeight: "1.15" }, onclick: () => openMore() },
+  const qualityBtn = h("button", { type: "button", class: "pill", "data-tooltip": "Change recording quality preset", "data-tooltip-pos": "top", style: { flexDirection: "column", alignItems: "flex-start", gap: "0", lineHeight: "1.15" }, onclick: () => openMore() },
     h("span", { class: "tiny muted" }, "Quality"), h("span", { style: { color: "var(--text)" } }, PRESET_LABEL[opts.preset]));
 
   const sources: [Kind, string][] = info.os === "windows" ? [["screen", "Screen"], ["window", "Window"], ["area", "Area"]] : [["screen", "Screen"], ["area", "Area"]];
@@ -100,8 +100,8 @@ export async function mount(shell: Shell) {
     pill("Camera", "camera", "camera", "Camera off"),
     h("span", { class: "sep" }),
     qualityBtn,
-    h("button", { type: "button", class: "recbtn", onclick: () => start() }, "Record"),
-    h("button", { type: "button", class: "icon-btn", "aria-label": "More recording options", onclick: () => openMore() }, icon("more", 18)));
+    h("button", { type: "button", class: "recbtn", "data-tooltip": "Start recording (Ctrl Shift R)", "data-tooltip-pos": "top", onclick: () => start() }, "Record"),
+    h("button", { type: "button", class: "icon-btn", "aria-label": "More recording options", "data-tooltip": "Recording options", "data-tooltip-pos": "top", onclick: () => openMore() }, icon("more", 18)));
 
   const page = h("div", { class: "recorder" },
     h("h1", null, "Record"),

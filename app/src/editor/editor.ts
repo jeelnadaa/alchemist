@@ -168,10 +168,10 @@ class Editor {
     this.savedEl = h("span", { class: "tiny muted row", style: { gap: "4px" } }, icon("check", 13), "Saved");
     this.shell.setCrumbs(h("span", { class: "row", style: { gap: "8px" } }, h("a", { href: "#/projects" }, "Projects"), h("span", { class: "muted" }, "/"), this.nameEl, this.savedEl));
     this.shell.setTitleRight(h("div", { class: "row", style: { gap: "4px" } },
-      h("button", { type: "button", class: "icon-btn", "aria-label": "Undo", title: "Undo", onclick: () => this.undo() }, icon("undo", 18)),
-      h("button", { type: "button", class: "icon-btn", "aria-label": "Redo", title: "Redo", onclick: () => this.redo() }, icon("redo", 18)),
-      h("button", { type: "button", class: "icon-btn", "aria-label": "Project options", title: "More", onclick: () => this.projectMenu() }, icon("more", 18)),
-      h("button", { type: "button", class: "btn primary", style: { height: "36px", marginLeft: "6px" }, onclick: () => this.export() }, "Export")));
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Undo", "data-tooltip": "Undo (Ctrl Z)", "data-tooltip-pos": "bottom", onclick: () => this.undo() }, icon("undo", 18)),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Redo", "data-tooltip": "Redo (Ctrl Shift Z)", "data-tooltip-pos": "bottom", onclick: () => this.redo() }, icon("redo", 18)),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Project options", "data-tooltip": "Project options", "data-tooltip-pos": "bottom", onclick: () => this.projectMenu() }, icon("more", 18)),
+      h("button", { type: "button", class: "btn primary", "data-tooltip": "Export video (Ctrl E)", "data-tooltip-pos": "bottom", style: { height: "36px", marginLeft: "6px" }, onclick: () => this.export() }, "Export")));
 
     this.banner = h("div", { class: "col", style: { gap: "8px" } });
     this.canvas = h("div", { class: "canvas" });
@@ -195,14 +195,14 @@ class Editor {
     });
     this.timeEl.addEventListener("blur", () => this.updateTime());
     this.durEl = h("span", { class: "mono small muted" });
-    this.playBtn = h("button", { type: "button", class: "play", "aria-label": "Play", onclick: () => this.toggle() }, icon("play", 16)) as HTMLButtonElement;
+    this.playBtn = h("button", { type: "button", class: "play", "aria-label": "Play", "data-tooltip": "Play / Pause (Space)", "data-tooltip-pos": "top", onclick: () => this.toggle() }, icon("play", 16)) as HTMLButtonElement;
     const preview = h("section", { class: "ed-preview", "aria-label": "Preview" },
       this.banner,
       h("div", { class: "stage-wrap" }, this.stage),
       h("div", { class: "transport" },
-        h("button", { type: "button", class: "icon-btn", "aria-label": "Back 5 seconds", onclick: () => this.seek(this.t - 5) }, icon("back", 18)),
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Back 5 seconds", "data-tooltip": "Back 5s (← or J)", "data-tooltip-pos": "top", onclick: () => this.seek(this.t - 5) }, icon("back", 18)),
         this.playBtn,
-        h("button", { type: "button", class: "icon-btn", "aria-label": "Forward 5 seconds", onclick: () => this.seek(this.t + 5) }, icon("forward", 18)),
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Forward 5 seconds", "data-tooltip": "Forward 5s (→ or L)", "data-tooltip-pos": "top", onclick: () => this.seek(this.t + 5) }, icon("forward", 18)),
         h("span", { class: "row", style: { gap: "4px" } }, this.timeEl, this.durEl)));
     this.inspector = h("aside", { class: "inspector", "aria-label": "Settings for the selection" });
     this.tl = h("div", { class: "tl-scroll" });
@@ -218,14 +218,14 @@ class Editor {
       h("span", { class: "grow" }),
       h("span", { class: "tiny muted" }, "Zoom"),
       (() => {
-        const r = h("input", { type: "range", min: "5", max: "300", value: String(this.pxPerSec), "aria-label": "Timeline zoom (Ctrl + scroll also zooms)", style: { width: "120px", marginLeft: "8px" } }) as HTMLInputElement;
+        const r = h("input", { type: "range", min: "5", max: "300", value: String(this.pxPerSec), "aria-label": "Timeline zoom (Ctrl + scroll also zooms)", "data-tooltip": "Timeline zoom", "data-tooltip-pos": "top", style: { width: "120px", marginLeft: "8px" } }) as HTMLInputElement;
         r.style.setProperty("--fill", `${((this.pxPerSec - 5) / 295) * 100}%`);
         r.addEventListener("input", () => this.setZoom(+r.value));
         this.zoomInput = r;
         return r;
       })(),
-      h("button", { type: "button", class: "icon-btn", title: "Fit the whole video", "aria-label": "Fit the whole video in the timeline", onclick: () => this.zoomToFit() }, icon("box", 15)),
-      h("button", { type: "button", class: "icon-btn tl-collapse", title: "Shrink or expand the timeline", "aria-label": "Shrink or expand the timeline", onclick: () => this.toggleTimeline() }, icon("chevron", 16)));
+      h("button", { type: "button", class: "icon-btn", "data-tooltip": "Fit video in timeline (Ctrl 0)", "data-tooltip-pos": "top", "aria-label": "Fit the whole video in the timeline", onclick: () => this.zoomToFit() }, icon("box", 15)),
+      h("button", { type: "button", class: "icon-btn tl-collapse", "data-tooltip": "Expand / shrink timeline", "data-tooltip-pos": "top", "aria-label": "Shrink or expand the timeline", onclick: () => this.toggleTimeline() }, icon("chevron", 16)));
     const splitter = h("div", { class: "tl-splitter", role: "separator", "aria-orientation": "horizontal", "aria-label": "Drag to resize the timeline", tabindex: "0", title: "Drag to resize. Double-click to shrink or expand." });
     splitter.addEventListener("mousedown", (e) => this.dragSplitter(e));
     splitter.addEventListener("dblclick", () => this.toggleTimeline());
@@ -250,7 +250,7 @@ class Editor {
   }
 
   tool(ic: Parameters<typeof icon>[0], label: string, key: string, run: () => void) {
-    return h("button", { type: "button", class: "tool", onclick: run }, icon(ic, 15), label, key ? h("span", { class: "k" }, key) : null);
+    return h("button", { type: "button", class: "tool", "data-tooltip": key ? `${label} (${key})` : label, "data-tooltip-pos": "top", onclick: run }, icon(ic, 15), label, key ? h("span", { class: "k" }, key) : null);
   }
 
   renderAll() {
