@@ -169,10 +169,19 @@ fn video_chain(c: &Clip, input: usize, box_w: u32, box_h: u32, fps: f64) -> Stri
     let mut ch = format!("[{input}:v]");
     let mut parts: Vec<String> = Vec::new();
     if c.freeze {
-        parts.push(format!("trim=start={}", f(c.in_point)));
+        // Hold one frame with tpad (an endless `loop` deadlocks FFmpeg 7's
+        // threaded pipeline when the same input feeds other clips).
+        parts.push(format!(
+            "trim=start={}:end={}",
+            f(c.in_point),
+            f(c.in_point + 0.25)
+        ));
         parts.push("setpts=PTS-STARTPTS".into());
         parts.push("trim=end_frame=1".into());
-        parts.push("loop=loop=-1:size=1:start=0".into());
+        parts.push(format!(
+            "tpad=stop_mode=clone:stop_duration={}",
+            f(c.length() + 0.1)
+        ));
         parts.push(format!("fps={}", limits::fps_to_ffmpeg(fps)));
         parts.push(format!("trim=duration={}", f(c.length())));
     } else {
@@ -1609,7 +1618,8 @@ mod tests {
         let mut p2 = demo();
         p2.tracks[0].clips[0].freeze = true;
         let (g2, _) = graph(&p2, &req(Preset::Share));
-        assert!(g2.contains("loop=loop=-1:size=1"));
+        assert!(g2.contains("trim=end_frame=1,tpad=stop_mode=clone"));
+        assert!(!g2.contains("[0:v]trim=start=0,"));
     }
 
     #[test]
