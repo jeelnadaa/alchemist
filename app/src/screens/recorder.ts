@@ -88,7 +88,20 @@ export async function mount(shell: Shell) {
     return b;
   };
 
-  const qualityBtn = h("button", { type: "button", class: "pill", "data-tooltip": "Change recording quality preset", "data-tooltip-pos": "top", style: { flexDirection: "column", alignItems: "flex-start", gap: "0", lineHeight: "1.15" }, onclick: () => openMore() },
+  const updateQualityBtn = () => {
+    const sub = qualityBtn.lastElementChild;
+    if (!sub) return;
+    if (custom?.fps || custom?.width || custom?.height) {
+      const parts: string[] = [];
+      if (custom.width && custom.height) parts.push(`${custom.width}×${custom.height}`);
+      if (custom.fps) parts.push(`${custom.fps} fps`);
+      sub.textContent = parts.length ? parts.join(" · ") : PRESET_LABEL[opts.preset];
+    } else {
+      sub.textContent = PRESET_LABEL[opts.preset];
+    }
+  };
+
+  const qualityBtn = h("button", { type: "button", class: "pill", "data-tooltip": "Change recording quality and frame rate (up to 240 fps)", "data-tooltip-pos": "top", style: { flexDirection: "column", alignItems: "flex-start", gap: "0", lineHeight: "1.15" }, onclick: () => openMore() },
     h("span", { class: "tiny muted" }, "Quality"), h("span", { style: { color: "var(--text)" } }, PRESET_LABEL[opts.preset]));
 
   let replayActive = false;
@@ -199,36 +212,80 @@ export async function mount(shell: Shell) {
 
   function openMore() {
     modal((close) => {
-      const presetSeg = segmented("Quality", [["tutorial", "Tutorial · 30 fps"], ["high", "High · 60 fps"], ["tiny", "Tiny file"]], opts.preset, (v) => {
+      const presetSeg = segmented("Quality", [["tutorial", "Tutorial · 30 fps"], ["high", "High · 60 fps"], ["tiny", "Tiny file · 24 fps"]], opts.preset, (v) => {
         opts.preset = v;
         store.set({ recordPreset: v });
-        qualityBtn.lastElementChild!.textContent = PRESET_LABEL[v];
+        updateQualityBtn();
         renderEstimate();
       });
-      const w = h("input", { class: "input", type: "number", value: String(custom?.width ?? ""), placeholder: "Same as screen", "aria-label": "Width" }) as HTMLInputElement;
-      const hh = h("input", { class: "input", type: "number", value: String(custom?.height ?? ""), placeholder: "Same as screen", "aria-label": "Height" }) as HTMLInputElement;
-      const f = h("input", { class: "input", type: "number", step: "0.01", value: String(custom?.fps ?? ""), placeholder: "From quality", "aria-label": "Frame rate" }) as HTMLInputElement;
-      const notes = h("div", { class: "col small" });
+      const w = h("input", { class: "input", type: "number", value: String(custom?.width ?? ""), placeholder: "Width (e.g. 1920)", "aria-label": "Width" }) as HTMLInputElement;
+      const hh = h("input", { class: "input", type: "number", value: String(custom?.height ?? ""), placeholder: "Height (e.g. 1080)", "aria-label": "Height" }) as HTMLInputElement;
+      const f = h("input", { class: "input", type: "number", step: "1", min: "1", max: "240", value: String(custom?.fps ?? ""), placeholder: "Custom fps (1-240)", "aria-label": "Frame rate" }) as HTMLInputElement;
+      const notes = h("div", { class: "col small", style: { gap: "4px" } });
       const check = async () => {
         notes.replaceChildren();
         if (!w.value && !hh.value && !f.value) {
           custom = null;
+          updateQualityBtn();
+          renderEstimate();
           return;
         }
-        const c = await call<Clamped>("check_limits", { width: +w.value || 1920, height: +hh.value || 1080, fps: +f.value || (opts.preset === "high" ? 60 : 30) });
+        const fallbackFps = opts.preset === "high" ? 60 : opts.preset === "tiny" ? 24 : 30;
+        const c = await call<Clamped>("check_limits", {
+          width: +w.value || (monitor ? monitor.width : 1920),
+          height: +hh.value || (monitor ? monitor.height : 1080),
+          fps: +f.value || fallbackFps,
+        });
         custom = c.value;
         for (const n of c.notes) notes.appendChild(h("span", { style: { color: "var(--warn)" } }, n));
-        if (c.value.fps > 60 || c.value.width * c.value.height > 3840 * 2160) notes.appendChild(h("span", { style: { color: "var(--warn)" } }, "This is heavy for live recording and may drop frames. 1080p at 30 or 60 fps is recommended."));
+        if (c.value.fps > 144) {
+          notes.appendChild(h("span", { style: { color: "var(--accent)" } }, "⚡ High refresh-rate mode (144+ fps) will record silky smooth gaming footage."));
+        }
+        updateQualityBtn();
         renderEstimate();
       };
       [w, hh, f].forEach((el) => el.addEventListener("change", check));
+
+      const fpsChips = h("div", { class: "chips", style: { marginTop: "6px" } },
+        ...([30, 60, 120, 144, 240] as const).map((rate) =>
+          h("button", {
+            type: "button",
+            class: "chip",
+            onclick: () => {
+              f.value = String(rate);
+              check();
+            }
+          }, `${rate} fps`)
+        ),
+        h("button", {
+          type: "button",
+          class: "chip",
+          onclick: () => {
+            f.value = "";
+            check();
+          }
+        }, "Auto")
+      );
+
       const minutes = h("input", { class: "input", type: "number", min: "0", value: String(autoStopMin || ""), placeholder: "Off", "aria-label": "Stop after minutes", onchange: (e: Event) => (autoStopMin = +(e.target as HTMLInputElement).value || 0) });
       const mb = h("input", { class: "input", type: "number", min: "0", value: String(autoStopMb || ""), placeholder: "Off", "aria-label": "Stop at size in MB", onchange: (e: Event) => (autoStopMb = +(e.target as HTMLInputElement).value || 0) });
       return h("div", { class: "dialog", style: { width: "620px" } },
         h("header", null, h("h2", null, "Recording options"), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close", 16))),
         h("div", { class: "content" },
-          h("div", { class: "field" }, "Quality", presetSeg),
-          h("div", { class: "field" }, "Custom size and frame rate (optional)", h("div", { class: "grid3" }, w, hh, f), notes),
+          h("div", { class: "field" }, "Preset quality", presetSeg),
+          h("div", { class: "field" },
+            h("span", null, "Frame rate (up to 240 fps)"),
+            fpsChips,
+            h("div", { class: "row", style: { gap: "8px", marginTop: "4px" } },
+              f,
+              h("span", { class: "tiny muted", style: { alignSelf: "center" } }, "Supports 120, 144, 165, 240 fps for high-refresh gaming.")
+            )
+          ),
+          h("div", { class: "field" },
+            h("span", null, "Custom resolution (optional)"),
+            h("div", { class: "grid2" }, w, hh)
+          ),
+          notes,
           h("div", { class: "grid2" }, h("label", { class: "field" }, "Stop after (minutes)", minutes), h("label", { class: "field" }, "Stop at size (MB)", mb)),
           toggleRow("Smooth cursor", "Record the pointer separately so the editor can draw a smooth, resizable cursor with click ripples.", opts.smoothCursor, (v) => { opts.smoothCursor = v; store.set({ recordSmoothCursor: v }); }),
           toggleRow("Record keystrokes", "For keystroke overlays in the editor. Stays on this computer.", opts.keys, (v) => { opts.keys = v; store.set({ recordKeys: v }); }),
@@ -257,6 +314,7 @@ export async function mount(shell: Shell) {
             mic: opts.mic,
             systemAudio: opts.systemAudio,
             preset: opts.preset,
+            video: custom,
           }
         });
         replayActive = true;

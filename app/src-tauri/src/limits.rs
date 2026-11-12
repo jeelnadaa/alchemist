@@ -14,7 +14,9 @@ pub const MIN_FPS: f64 = 1.0;
 pub const MAX_FPS: f64 = 240.0;
 
 /// Frame rates offered as one-click presets everywhere.
-pub const PRESET_FPS: [f64; 8] = [23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0];
+pub const PRESET_FPS: [f64; 11] = [
+    23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0, 120.0, 144.0, 240.0,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct VideoSettings {
@@ -188,6 +190,19 @@ mod tests {
         assert_eq!(clamp_video(v(7679, 1080, 30.0)).value.width, 7680);
         // An odd minimum rounds up.
         assert_eq!(clamp_video(v(129, 73, 30.0)).value, v(130, 74, 30.0));
+    }
+
+    #[test]
+    fn high_framerate_presets_and_custom() {
+        assert_eq!(clamp_video(v(1920, 1080, 120.0)).value.fps, 120.0);
+        assert_eq!(clamp_video(v(1920, 1080, 144.0)).value.fps, 144.0);
+        assert_eq!(clamp_video(v(1920, 1080, 240.0)).value.fps, 240.0);
+        // Custom gaming framerate like 165Hz
+        let c165 = clamp_video(v(2560, 1440, 165.0));
+        assert_eq!(c165.value.fps, 165.0);
+        assert_eq!(fps_to_ffmpeg(165.0), "165");
+        assert_eq!(fps_to_ffmpeg(144.0), "144");
+        assert_eq!(fps_to_ffmpeg(240.0), "240");
     }
 
     #[test]

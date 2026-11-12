@@ -30,6 +30,8 @@ pub struct ReplayOptions {
     pub mic: bool,
     pub system_audio: bool,
     pub preset: Preset,
+    #[serde(default)]
+    pub video: Option<crate::limits::VideoSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -68,11 +70,21 @@ pub fn buffer_args(
     dir: &Path,
     os: &str,
 ) -> Result<Vec<String>, String> {
-    let fps = recorder::fps_for(opts.preset);
+    let base_fps = recorder::fps_for(opts.preset);
+    let target = opts.video.map(|v| crate::limits::clamp_video(v).value);
+    let fps = target.map(|t| t.fps).unwrap_or(base_fps);
     let (mut a, mut vf) = recorder::capture_input(&opts.source, fps, caps, os)?;
     a.insert(0, "-thread_queue_size".into());
     a.insert(1, "512".into());
-    vf.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".into());
+    if let Some(t) = target {
+        vf.push(crate::limits::scale_filter(
+            t.width,
+            t.height,
+            crate::limits::FitMode::Fit,
+        ));
+    } else {
+        vf.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".into());
+    }
     a.extend(["-vf".into(), vf.join(",")]);
     let (mut enc, name) = recorder::capture_encoder(caps, opts.preset);
     // A keyframe at every piece boundary so pieces can be joined without re-encoding.
@@ -486,16 +498,47 @@ mod tests {
             mic: false,
             system_audio: false,
             preset: Preset::Tutorial,
+            video: None,
         };
         let a = buffer_args(&o, &caps(), Path::new("buf"), "windows")
             .unwrap()
             .join(" ");
         assert!(a.contains("-f segment -segment_time 2 -segment_wrap 18"));
         assert!(a.contains("-g 60"));
+        assert!(a.contains("-framerate 30"));
         assert!(a.contains("-reset_timestamps 1"));
         assert!(a.contains("-draw_mouse 1"));
         assert!(a.ends_with("piece-%03d.mkv"));
         assert_eq!(pieces_for(30), 18);
+    }
+
+    #[test]
+    fn buffer_rolls_with_custom_framerate() {
+        let o = ReplayOptions {
+            source: Source::Screen {
+                index: 0,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            seconds: 60,
+            mic: false,
+            system_audio: false,
+            preset: Preset::High,
+            video: Some(crate::limits::VideoSettings {
+                width: 2560,
+                height: 1440,
+                fps: 144.0,
+            }),
+        };
+        let a = buffer_args(&o, &caps(), Path::new("buf"), "windows")
+            .unwrap()
+            .join(" ");
+        assert!(a.contains("-framerate 144"));
+        assert!(a.contains("-g 288"));
+        assert!(a.contains("scale=2560:1440"));
+        assert_eq!(pieces_for(60), 33);
     }
 
     #[test]

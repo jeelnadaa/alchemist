@@ -260,6 +260,13 @@ describe("format", () => {
     expect(clock(187)).toBe("3:07");
     expect(clock(3723)).toBe("1:02:03");
     expect(timecode(62.5, 30)).toBe("00:01:02:15");
+    expect(timecode(1.5, 60)).toBe("00:00:01:30");
+    expect(timecode(1.5, 120)).toBe("00:00:01:60");
+    expect(timecode(1.5, 144)).toBe("00:00:01:72");
+    expect(timecode(1.5, 240)).toBe("00:00:01:120");
+    expect(M.parseTime("00:00:01:60", 120)).toBe(1.5);
+    expect(M.parseTime("00:00:01:72", 144)).toBe(1.5);
+    expect(M.parseTime("00:00:01:120", 240)).toBe(1.5);
     expect(eta(30)).toBe("under a minute left");
     expect(ratio(1240, 24.8)).toBe("50× smaller");
     expect(ratio(10, 10)).toBe("about the same size");

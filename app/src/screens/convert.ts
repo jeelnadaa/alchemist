@@ -228,7 +228,35 @@ export async function mount(shell: Shell) {
     modal((close) => {
       const w = h("input", { class: "input", type: "number", placeholder: "Same", value: String(video?.width ?? ""), "aria-label": "Width" }) as HTMLInputElement;
       const hh = h("input", { class: "input", type: "number", placeholder: "Same", value: String(video?.height ?? ""), "aria-label": "Height" }) as HTMLInputElement;
-      const fpsSel = h("select", { class: "input", "aria-label": "Frame rate" }, h("option", { value: "" }, "Same as original"), ...["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"].map((v) => h("option", { value: v, selected: String(video?.fps) === v }, `${v} fps`))) as HTMLSelectElement;
+      const standardFps = ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60", "120", "144", "240"];
+      const isCustomFps = video?.fps != null && !standardFps.includes(String(video.fps));
+      const customFps = h("input", {
+        class: "input",
+        type: "number",
+        step: "0.01",
+        min: "1",
+        max: "240",
+        value: isCustomFps ? String(video?.fps) : "",
+        placeholder: "Custom fps (1-240)",
+        style: { width: "160px", display: isCustomFps ? "block" : "none" },
+        "aria-label": "Custom frame rate"
+      }) as HTMLInputElement;
+
+      const fpsSel = h("select", { class: "input", "aria-label": "Frame rate" },
+        h("option", { value: "" }, "Same as original"),
+        ...standardFps.map((v) => h("option", { value: v, selected: !isCustomFps && String(video?.fps) === v }, `${v} fps`)),
+        h("option", { value: "custom", selected: isCustomFps }, "Custom…")
+      ) as HTMLSelectElement;
+
+      fpsSel.addEventListener("change", () => {
+        if (fpsSel.value === "custom") {
+          customFps.style.display = "block";
+          customFps.focus();
+        } else {
+          customFps.style.display = "none";
+        }
+      });
+
       const lock = { on: true };
       const notes = h("div", { class: "col small" });
       const src = files[selected]?.info;
@@ -236,8 +264,9 @@ export async function mount(shell: Shell) {
       const presets = h("div", { class: "chips" }, ...[["16:9", 1920, 1080], ["9:16", 1080, 1920], ["1:1", 1080, 1080], ["4:5", 1080, 1350], ["21:9", 2560, 1080]].map(([n, pw, ph]) => h("button", { type: "button", onclick: () => { w.value = String(pw); hh.value = String(ph); fit = "fill"; } }, n as string)));
       const apply = async () => {
         notes.replaceChildren();
-        if (!w.value && !hh.value && !fpsSel.value) { video = null; return true; }
-        const c = await call<Clamped>("check_limits", { width: +w.value || src?.width || 1920, height: +hh.value || src?.height || 1080, fps: +fpsSel.value || src?.fps || 30 });
+        const chosenFps = fpsSel.value === "custom" ? +customFps.value : +fpsSel.value;
+        if (!w.value && !hh.value && !chosenFps) { video = null; return true; }
+        const c = await call<Clamped>("check_limits", { width: +w.value || src?.width || 1920, height: +hh.value || src?.height || 1080, fps: chosenFps || src?.fps || 30 });
         video = c.value;
         c.notes.forEach((n) => notes.appendChild(h("span", { style: { color: "var(--warn)" } }, n)));
         if (src && (c.value.width > src.width || c.value.height > src.height)) notes.appendChild(h("span", { style: { color: "var(--warn)" } }, "This is bigger than the original, so it's upscaled. Turn on Enhance › Upscale for the best result."));
@@ -249,7 +278,7 @@ export async function mount(shell: Shell) {
         h("div", { class: "content" },
           h("div", { class: "field" }, "Size", h("div", { class: "grid2" }, w, hh), presets, toggleRow("Keep proportions", null, true, (v) => (lock.on = v))),
           h("div", { class: "field" }, "When proportions differ", segmented("Fit", [["fit", "Fit (bars)"], ["fill", "Fill (crop)"], ["stretch", "Stretch"]], fit, (v) => (fit = v))),
-          h("label", { class: "field" }, "Frame rate", fpsSel), notes,
+          h("div", { class: "field" }, h("span", null, "Frame rate (up to 240 fps)"), h("div", { class: "row", style: { gap: "8px" } }, fpsSel, customFps)), notes,
           toggleRow("Use the graphics card", "Much faster. Turn off if a file comes out wrong.", useHardware, (v) => (useHardware = v)),
           toggleRow("Keep titles, chapters and subtitles", null, keepMetadata, (v) => (keepMetadata = v))),
         h("footer", null, h("button", { type: "button", class: "btn", onclick: () => { video = null; fit = "fit"; close(); renderPanel(); } }, "Reset"), h("span", { class: "grow" }), h("button", { type: "button", class: "btn primary", onclick: async () => { await apply(); close(); renderPanel(); } }, "Done")));

@@ -118,7 +118,7 @@ export function openExport(project: Project, onStarted: (job: Job) => void) {
 function customFields(onChange: (v: { width: number; height: number; fps: number } | null) => void): HTMLElement {
   const w = h("input", { class: "input", type: "number", placeholder: "Width", "aria-label": "Width" }) as HTMLInputElement;
   const hh = h("input", { class: "input", type: "number", placeholder: "Height", "aria-label": "Height" }) as HTMLInputElement;
-  const f = h("input", { class: "input", type: "number", step: "0.01", placeholder: "fps", "aria-label": "Frame rate" }) as HTMLInputElement;
+  const f = h("input", { class: "input", type: "number", step: "0.01", min: "1", max: "240", placeholder: "fps (up to 240)", "aria-label": "Frame rate" }) as HTMLInputElement;
   const notes = h("div", { class: "col small" });
   const check = async () => {
     notes.replaceChildren();

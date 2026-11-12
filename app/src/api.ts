@@ -24,7 +24,7 @@ export type Source =
   | { kind: "window"; title: string }
   | { kind: "area"; x: number; y: number; width: number; height: number; screenIndex: number };
 export interface RecordOptions { source: Source; mic: boolean; systemAudio: boolean; camera: boolean; preset: "tutorial" | "high" | "tiny"; video?: { width: number; height: number; fps: number } | null; recordKeys: boolean; autoStopSeconds?: number | null; autoStopMb?: number | null; separateCursor?: boolean }
-export interface ReplayOptions { source: Source; seconds: number; mic: boolean; systemAudio: boolean; preset: "tutorial" | "high" | "tiny" }
+export interface ReplayOptions { source: Source; seconds: number; mic: boolean; systemAudio: boolean; preset: "tutorial" | "high" | "tiny"; video?: { width: number; height: number; fps: number } | null }
 export interface ReplayStatus { running: boolean; seconds: number; buffered: number; notes: string[] }
 export interface Manifest { id: string; startedUnix: number; state: string; fps: number; segments: string[]; video?: string | null; mic?: string | null; systemAudio?: string | null; camera?: string | null; events?: string | null; duration: number; droppedFrames: number; bytes: number; encoder: string; notes: string[] }
 export interface RecordStatus { recording: boolean; paused: boolean; seconds: number; bytes: number; droppedFrames: number; freeBytes?: number | null; warning?: string | null; micLevel: number }

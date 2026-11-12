@@ -100,7 +100,7 @@ const PAGES: Record<string, (el: HTMLElement, rerender: () => void) => void | Pr
         toggleRow("Camera bubble", null, s.recordCamera, (v) => store.set({ recordCamera: v })),
         toggleRow("Record keystrokes", "For keystroke overlays. Saved only on this computer.", s.recordKeys, (v) => store.set({ recordKeys: v }))),
       h("div", { class: "field" }, "Countdown", segmented("Countdown", [["0", "Off"], ["3", "3 seconds"], ["5", "5 seconds"]], String(s.countdown) as "0" | "3" | "5", (v) => store.set({ countdown: +v }))),
-      h("p", { class: "muted small" }, "Start and stop from anywhere with ", h("span", { class: "kbd" }, "Ctrl Shift R"), ". Recording runs in its own process and doesn't load the editor."),
+      h("p", { class: "muted small" }, "Start and stop from anywhere with ", h("span", { class: "kbd" }, "Ctrl Shift R"), ". Supports high-refresh gaming and custom frame rates up to 240 fps (120, 144, 240 fps) in recording options."),
       h("div", { class: "field", style: { marginTop: "12px" } }, "Instant replay buffer", segmented("Replay buffer", [["15", "15 s"], ["30", "30 s"], ["60", "1 min"], ["120", "2 min"]], String(s.replaySeconds || 30) as any, (v) => store.set({ replaySeconds: +v }))),
       h("p", { class: "muted small" }, "Save the last replay buffer anytime with ", h("span", { class: "kbd" }, "Ctrl Shift S"), ". Saved into your Replays folder."));
   },
