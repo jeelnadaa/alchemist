@@ -185,10 +185,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.v.outputs.version }}"
-          # A manual run may come before release-please made the release: create it as a draft.
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "$TAG" --notes-file notes.md --target "${{ github.sha }}"
-          gh release upload "$TAG" release-assets/* --clobber
-          gh release edit "$TAG" --draft=false --latest
+          REPO="${{ github.repository }}"
+          # release-please's draft has no tag until it's published, so `gh release`
+          # can't find it by tag: look it up by tag_name through the API.
+          ID=$(gh api "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1)
+          if [ -z "$ID" ]; then
+            ID=$(gh api -X POST "repos/$REPO/releases" -f tag_name="$TAG" -f name="$TAG" -F draft=true               -f target_commitish="${{ github.sha }}" -F body=@notes.md --jq .id)
+          fi
+          # Build the tag from the commit that was built.
+          gh api -X PATCH "repos/$REPO/releases/$ID" -f target_commitish="${{ github.sha }}" > /dev/null
+          for f in release-assets/*; do
+            name=$(basename "$f")
+            old=$(gh api "repos/$REPO/releases/$ID/assets?per_page=100" --jq ".[] | select(.name==\"$name\") | .id")
+            [ -n "$old" ] && gh api -X DELETE "repos/$REPO/releases/assets/$old"
+            curl -sSf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream"               --data-binary @"$f" "https://uploads.github.com/repos/$REPO/releases/$ID/assets?name=$name" > /dev/null
+          done
+          gh api -X PATCH "repos/$REPO/releases/$ID" -F draft=false -f make_latest=true > /dev/null
       - name: Dry-run summary
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: ls -la release-assets >> "$GITHUB_STEP_SUMMARY"
