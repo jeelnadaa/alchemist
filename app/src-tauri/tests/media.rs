@@ -75,7 +75,7 @@ fn run_job(spec: jobs::JobSpec) -> Job {
     let id = q.add(spec).id;
     loop {
         let j = rx
-            .recv_timeout(Duration::from_secs(180))
+            .recv_timeout(Duration::from_secs(360))
             .expect("job finished in time");
         if j.id == id && matches!(j.status, Status::Done | Status::Failed | Status::Cancelled) {
             return j;

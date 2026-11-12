@@ -36,8 +36,6 @@ permissions:
 
 jobs:
   release-please:
-    # Commits made by the release bot never trigger another release run.
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.author.name, 'github-actions')
     runs-on: ubuntu-latest
     outputs:
       created: ${{ steps.rp.outputs.release_created }}
@@ -46,7 +44,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         id: rp
-        if: github.event_name == 'push'
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -55,12 +52,12 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: windows-latest, target: aarch64-pc-windows-msvc, cross: true }
-          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: macos-13, target: x86_64-apple-darwin }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
