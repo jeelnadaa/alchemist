@@ -2,7 +2,6 @@
 # Run `make help` for every target. CI calls these same targets.
 
 SHELL := bash
-.ONESHELL:
 .DEFAULT_GOAL := build
 
 APP      := app
