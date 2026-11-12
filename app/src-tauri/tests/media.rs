@@ -241,12 +241,47 @@ fn project_export_renders_everything() {
     let clip = make_clip(dir, "clip.mp4");
     let caps = ffmpeg::capabilities().unwrap();
     let used = [
-        "drawtext", "zoompan", "geq", "boxblur", "drawbox", "afftdn", "loudnorm", "apad", "amix", "adelay", "atempo",
-        "palettegen", "paletteuse", "fade", "afade", "overlay", "trim", "atrim", "loop", "highpass", "scale", "crop",
-        "color", "hflip", "split", "aresample", "fps", "format", "setpts", "asetpts", "volume",
+        "drawtext",
+        "zoompan",
+        "geq",
+        "boxblur",
+        "drawbox",
+        "afftdn",
+        "loudnorm",
+        "apad",
+        "amix",
+        "adelay",
+        "atempo",
+        "palettegen",
+        "paletteuse",
+        "fade",
+        "afade",
+        "overlay",
+        "trim",
+        "atrim",
+        "loop",
+        "highpass",
+        "scale",
+        "crop",
+        "color",
+        "hflip",
+        "split",
+        "aresample",
+        "fps",
+        "format",
+        "setpts",
+        "asetpts",
+        "volume",
     ];
-    let missing: Vec<&str> = used.iter().copied().filter(|f| !caps.has_filter(f)).collect();
-    eprintln!("FFmpeg: {}\nfilters missing from this build: {missing:?}", caps.version);
+    let missing: Vec<&str> = used
+        .iter()
+        .copied()
+        .filter(|f| !caps.has_filter(f))
+        .collect();
+    eprintln!(
+        "FFmpeg: {}\nfilters missing from this build: {missing:?}",
+        caps.version
+    );
     let font = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join("Inter-Bold.ttf");
@@ -425,6 +460,43 @@ fn project_export_renders_everything() {
             }
             export::Preset::Audio => assert!(!o.has_video && o.has_audio),
             _ => {}
+        }
+    }
+
+    // The same project with text rendered through libass (as on builds without drawtext).
+    if caps.has_filter("ass") {
+        let mut no_drawtext = caps.clone();
+        no_drawtext.filters.retain(|f| f != "drawtext");
+        let out = dir.join("ass.mp4");
+        let req = export::ExportRequest {
+            preset: export::Preset::Share,
+            output: out.clone(),
+            range: None,
+            width: None,
+            height: None,
+            fps: None,
+            burn_captions: true,
+            sidecar_captions: false,
+            loudness: false,
+            use_hardware: false,
+            target_mb: None,
+        };
+        let plan = export::build(&p, &req, &no_drawtext, &font, &dir.join("tmp-ass")).unwrap();
+        let job = run_job(jobs::JobSpec {
+            title: "ass".into(),
+            kind: "export".into(),
+            input: None,
+            input_bytes: 0,
+            output: out.clone(),
+            passes: vec![plan.args],
+            duration: plan.duration,
+            convert: None,
+            measure_quality: false,
+            cleanup: vec![],
+        });
+        assert_eq!(job.status, Status::Done, "ass: {:?}", job.error);
+        if let Ok(d) = std::env::var("ALCHEMIST_DUMP") {
+            let _ = std::fs::copy(&out, Path::new(&d).join("export-ass.mp4"));
         }
     }
 

@@ -495,6 +495,27 @@ pub fn build(
     if !texts.is_empty() {
         std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
     }
+    if !texts.is_empty() && !caps.has_filter("drawtext") {
+        // Some FFmpeg builds (e.g. the static Linux one) have no drawtext but do
+        // have libass: render the same text as an ASS subtitle layer instead.
+        if !caps.has_filter("ass") {
+            return Err(
+                "This FFmpeg build can't draw text. Remove the text or install a full FFmpeg."
+                    .into(),
+            );
+        }
+        let ass = tmp.join("text.ass");
+        std::fs::write(&ass, ass_document(&texts, w, h)).map_err(|e| e.to_string())?;
+        temp_files.push(ass.clone());
+        let fonts_dir = font.parent().map(filter_path).unwrap_or_default();
+        let _ = write!(
+            g,
+            ";[{last}]ass=filename='{}':fontsdir='{fonts_dir}'[txa]",
+            filter_path(&ass)
+        );
+        last = "txa".into();
+        texts.clear();
+    }
     for (i, (s, e, text, size, pos, color, anim)) in texts.iter().enumerate() {
         let file = tmp.join(format!("text-{i}.txt"));
         std::fs::write(&file, text).map_err(|e| e.to_string())?;
@@ -673,6 +694,74 @@ pub fn build(
         duration,
         temp_files,
     })
+}
+
+fn ass_time(t: f64) -> String {
+    let cs = (t.max(0.0) * 100.0).round() as u64;
+    format!(
+        "{}:{:02}:{:02}.{:02}",
+        cs / 360_000,
+        cs / 6000 % 60,
+        cs / 100 % 60,
+        cs % 100
+    )
+}
+
+/// "#rrggbb" to ASS "&HAABBGGRR".
+fn ass_color(hex: &str, alpha: u8) -> String {
+    let c = hex.trim_start_matches('#');
+    if c.len() == 6 && c.chars().all(|x| x.is_ascii_hexdigit()) {
+        format!("&H{alpha:02X}{}{}{}", &c[4..6], &c[2..4], &c[0..2]).to_uppercase()
+    } else {
+        format!("&H{alpha:02X}FFFFFF")
+    }
+}
+
+/// The text clips as an ASS subtitle file: same size, place, colour, box and fade as drawtext.
+pub fn ass_document(
+    texts: &[(f64, f64, String, u32, String, String, String)],
+    w: u32,
+    h: u32,
+) -> String {
+    let mut out = format!(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+    );
+    for (i, (_, _, _, size, pos, color, _)) in texts.iter().enumerate() {
+        let align = match pos.as_str() {
+            "top" => 8,
+            "middle" => 5,
+            _ => 2,
+        };
+        let margin_v = (h as f64 * 0.08).round() as u32;
+        let _ = writeln!(
+            out,
+            "Style: S{i},Inter,{},{},&H000000FF,&H380A0C10,&H380A0C10,-1,0,0,0,100,100,0,0,3,{},0,{align},20,20,{margin_v},1",
+            (*size).max(8),
+            ass_color(color, 0),
+            (size / 3).max(6)
+        );
+    }
+    out.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    for (i, (s, e, text, _, _, _, anim)) in texts.iter().enumerate() {
+        let fade = if anim == "fade" {
+            "{\\fad(300,300)}"
+        } else {
+            ""
+        };
+        let body = text
+            .replace('\\', "\\\\")
+            .replace('{', "(")
+            .replace('}', ")")
+            .replace("\r\n", "\\N")
+            .replace('\n', "\\N");
+        let _ = writeln!(
+            out,
+            "Dialogue: 0,{},{},S{i},,0,0,0,,{fade}{body}",
+            ass_time(*s),
+            ass_time(*e)
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -934,5 +1023,27 @@ mod tests {
         .err()
         .unwrap();
         assert!(e.contains("empty"));
+    }
+
+    #[test]
+    fn ass_fallback_when_drawtext_is_missing() {
+        let mut caps = caps();
+        caps.filters.push("ass".into());
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = build(
+            &demo(),
+            &req(Preset::Share),
+            &caps,
+            Path::new("C:/fonts/Inter-Bold.ttf"),
+            tmp.path(),
+        );
+        assert!(plan.is_ok());
+        let g = std::fs::read_to_string(tmp.path().join("graph.txt")).unwrap();
+        assert!(g.contains("ass=filename=") && !g.contains("drawtext"));
+        let doc = std::fs::read_to_string(tmp.path().join("text.ass")).unwrap();
+        assert!(doc.contains("PlayResX: 1920"));
+        assert!(doc.contains("Dialogue: 0,0:00:04.00,0:00:07.00,S0,,0,0,0,,{\\fad(300,300)}Click: Publish 'now' 100%"));
+        assert_eq!(ass_color("#5b8cff", 0), "&H00FF8C5B");
+        assert_eq!(ass_time(3661.256), "1:01:01.26");
     }
 }
