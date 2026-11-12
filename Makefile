@@ -51,7 +51,7 @@ test-unit: ## Rust unit tests (limits, maths, arguments, project format…)
 	cd $(TAURI) && $(CARGO) test --lib
 
 test-media: ## End-to-end media tests against the real FFmpeg sidecar
-	cd $(TAURI) && $(CARGO) test --test media
+	cd $(TAURI) && $(CARGO) test --test media -- --nocapture
 
 test-ui: $(APP)/node_modules ## UI logic tests (timeline, themes/contrast, search, shortcuts)
 	cd $(APP) && npx vitest run

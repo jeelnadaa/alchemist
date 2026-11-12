@@ -240,6 +240,13 @@ fn project_export_renders_everything() {
     let dir = tmp.path();
     let clip = make_clip(dir, "clip.mp4");
     let caps = ffmpeg::capabilities().unwrap();
+    let used = [
+        "drawtext", "zoompan", "geq", "boxblur", "drawbox", "afftdn", "loudnorm", "apad", "amix", "adelay", "atempo",
+        "palettegen", "paletteuse", "fade", "afade", "overlay", "trim", "atrim", "loop", "highpass", "scale", "crop",
+        "color", "hflip", "split", "aresample", "fps", "format", "setpts", "asetpts", "volume",
+    ];
+    let missing: Vec<&str> = used.iter().copied().filter(|f| !caps.has_filter(f)).collect();
+    eprintln!("FFmpeg: {}\nfilters missing from this build: {missing:?}", caps.version);
     let font = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join("Inter-Bold.ttf");
